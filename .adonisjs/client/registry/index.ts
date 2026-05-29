@@ -6,6 +6,12 @@ import type { ApiDefinition } from './tree.d.ts'
 const placeholder: any = {}
 
 const routes = {
+  'simplex.solve': {
+    methods: ["POST"],
+    pattern: '/simplex/solve',
+    tokens: [{"old":"/simplex/solve","type":0,"val":"simplex","end":""},{"old":"/simplex/solve","type":0,"val":"solve","end":""}],
+    types: placeholder as Registry['simplex.solve']['types'],
+  },
   'auth.new_account.store': {
     methods: ["POST"],
     pattern: '/api/v1/auth/signup',

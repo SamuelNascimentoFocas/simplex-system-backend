@@ -10,21 +10,13 @@
 import { middleware } from '#start/kernel'
 import router from '@adonisjs/core/services/router'
 import { controllers } from '#generated/controllers'
+import SimplexController from '#controllers/simplex_controller'
 
 router.get('/', () => {
   return { message: 'API Simplex funcionando' }
 })
 
-router.post('/simplex/solve', async ({ request }) => {
-  const data = request.body()
-
-  console.log(data)
-
-  return {
-    received: data,
-    message: 'Dados recebidos com sucesso',
-  }
-})
+router.post('/simplex/solve', [SimplexController, 'solve'])
 
 router
   .group(() => {

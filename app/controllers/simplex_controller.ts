@@ -70,23 +70,22 @@ export default class SimplexController {
       type,
     })
 
-    const pivotColumn = simplexService.findPivotColumn(tableau)
-
-    const pivotRow = simplexService.findPivotRow(tableau, pivotColumn)
-
-    const nextTableau = simplexService.pivot(tableau, pivotRow, pivotColumn)
+    const result = simplexService.solve(tableau)
+    const extractedResult = simplexService.extractSolution(result.finalTableau, objective.length)
 
     return response.ok({
-      message: 'Tableau inicial criado com sucesso',
+      message: 'Simplex executado com sucesso',
       data: {
         objective,
         constraints,
         rhs,
         type,
-        tableau,
-        pivotColumn,
-        pivotRow,
-        nextTableau,
+        status: 'optimal',
+        solution: extractedResult.solution,
+        optimalValue: extractedResult.optimalValue,
+        initialTableau: tableau,
+        finalTableau: result.finalTableau,
+        iterations: result.iterations,
       },
     })
   }

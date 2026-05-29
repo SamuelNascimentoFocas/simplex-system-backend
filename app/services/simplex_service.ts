@@ -86,4 +86,63 @@ export default class SimplexService {
 
     return newTableau
   }
+
+  solve(tableau: number[][]) {
+    const iterations = [tableau]
+    let currentTableau = tableau
+
+    while (true) {
+      const pivotColumn = this.findPivotColumn(currentTableau)
+
+      if (pivotColumn === -1) {
+        break
+      }
+
+      const pivotRow = this.findPivotRow(currentTableau, pivotColumn)
+
+      if (pivotRow === -1) {
+        throw new Error('Problema ilimitado: não foi possível encontrar linha pivô')
+      }
+
+      currentTableau = this.pivot(currentTableau, pivotRow, pivotColumn)
+      iterations.push(currentTableau)
+    }
+
+    return {
+      finalTableau: currentTableau,
+      iterations,
+    }
+  }
+
+  extractSolution(finalTableau: number[][], numberOfVariables: number) {
+    const solution = Array(numberOfVariables).fill(0)
+    const lastColumnIndex = finalTableau[0].length - 1
+    const objectiveRowIndex = finalTableau.length - 1
+
+    for (let columnIndex = 0; columnIndex < numberOfVariables; columnIndex++) {
+      const column = finalTableau.map((row) => row[columnIndex])
+
+      const oneIndex = column.findIndex((value, rowIndex) => {
+        return rowIndex !== objectiveRowIndex && value === 1
+      })
+
+      const isBasicColumn =
+        oneIndex !== -1 &&
+        column.every((value, rowIndex) => {
+          if (rowIndex === oneIndex) return value === 1
+          if (rowIndex === objectiveRowIndex) return value === 0
+          return value === 0
+        })
+      if (isBasicColumn) {
+        solution[columnIndex] = finalTableau[oneIndex][lastColumnIndex]
+      }
+    }
+
+    const optimalValue = finalTableau[objectiveRowIndex][lastColumnIndex]
+
+    return {
+      solution,
+      optimalValue,
+    }
+  }
 }

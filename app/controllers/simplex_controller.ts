@@ -70,7 +70,18 @@ export default class SimplexController {
       type,
     })
 
-    const result = simplexService.solve(tableau)
+    let result
+
+    try {
+      result = simplexService.solve(tableau)
+    } catch (error) {
+      return response.badRequest({
+        message: 'Não foi possível resolver o problema',
+        status: 'unbounded',
+        error: error instanceof Error ? error.message : 'Erro desconhecido',
+      })
+    }
+
     const extractedResult = simplexService.extractSolution(result.finalTableau, objective.length)
 
     return response.ok({

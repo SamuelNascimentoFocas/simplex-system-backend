@@ -84,6 +84,11 @@ export default class SimplexController {
 
     const extractedResult = simplexService.extractSolution(result.finalTableau, objective.length)
 
+    const hasMultipleSolutions = simplexService.hasMultipleOptimalSolutions(
+      result.finalTableau,
+      objective.length
+    )
+
     return response.ok({
       message: 'Simplex executado com sucesso',
       data: {
@@ -94,6 +99,7 @@ export default class SimplexController {
         status: 'optimal',
         solution: extractedResult.solution,
         optimalValue: extractedResult.optimalValue,
+        hasMultipleSolutions,
         iterationsCount: result.iterations.length - 1,
         initialTableau: tableau,
         finalTableau: result.finalTableau,

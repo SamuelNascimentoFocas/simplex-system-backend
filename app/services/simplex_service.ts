@@ -145,4 +145,32 @@ export default class SimplexService {
       optimalValue,
     }
   }
+
+  hasMultipleOptimalSolutions(finalTableau: number[][], numberOfVariables: number) {
+    const objectiveRowIndex = finalTableau.length - 1
+    const objectiveRow = finalTableau[objectiveRowIndex]
+
+    for (let columnIndex = 0; columnIndex < numberOfVariables; columnIndex++) {
+      const column = finalTableau.map((row) => row[columnIndex])
+
+      const onesCount = column.filter((value, rowIndex) => {
+        return rowIndex !== objectiveRowIndex && value === 1
+      }).length
+
+      const zerosCount = column.filter((value, rowIndex) => {
+        return rowIndex !== objectiveRowIndex && value === 0
+      }).length
+
+      const isBasicColumn = onesCount === 1 && zerosCount === finalTableau.length - 2
+
+      const isNonBasicColumn = !isBasicColumn
+      const hasZeroReducedCost = objectiveRow[columnIndex] === 0
+
+      if (isNonBasicColumn && hasZeroReducedCost) {
+        return true
+      }
+    }
+
+    return false
+  }
 }

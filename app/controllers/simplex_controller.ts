@@ -55,6 +55,15 @@ export default class SimplexController {
       })
     }
 
+    if (rhs.some((value) => value < 0)) {
+      return response.badRequest({
+        message: 'Não foi possível resolver o problema',
+        status: 'unsupported',
+        error:
+          'O método Simplex padrão implementado atualmente exige que todos os valores de rhs sejam maiores ou iguais a zero. Casos com rhs negativo exigem tratamento adicional, como Big M ou método das Duas Fases.',
+      })
+    }
+
     if (type !== 'max' && type !== 'min') {
       return response.badRequest({
         error: 'O tipo do problema deve ser "max" ou "min"',

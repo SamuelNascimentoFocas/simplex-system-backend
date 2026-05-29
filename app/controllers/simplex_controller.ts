@@ -94,6 +94,7 @@ export default class SimplexController {
         status: 'optimal',
         solution: extractedResult.solution,
         optimalValue: extractedResult.optimalValue,
+        iterationsCount: result.iterations.length - 1,
         initialTableau: tableau,
         finalTableau: result.finalTableau,
         iterations: result.iterations,

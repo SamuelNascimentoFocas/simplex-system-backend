@@ -1,8 +1,8 @@
-# Simplex System Backend
+# Branch and Bound — Extensão do Simplex System Backend
 
-Backend desenvolvido em AdonisJS 6 para o projeto da disciplina de Pesquisa Operacional.
+Extensão desenvolvida em TypeScript para o projeto da disciplina de Pesquisa Operacional.
 
-O objetivo deste sistema é implementar o Método Simplex Tabular para resolução de problemas de Programação Linear por meio de uma API REST que poderá ser integrada a um frontend desenvolvido em React.
+O objetivo desta extensão é evoluir o núcleo matemático da aplicação para suportar **Programação Linear Inteira (PLI)** por meio do método **Branch and Bound**, reutilizando integralmente o solver Simplex já existente.
 
 ---
 
@@ -16,26 +16,21 @@ O objetivo deste sistema é implementar o Método Simplex Tabular para resoluç�
 
 ---
 
-## Funcionalidades Implementadas
+## O que foi alterado
 
-Atualmente o sistema possui as seguintes funcionalidades:
+### Arquivos adicionados
 
-* Validação completa da entrada recebida pela API;
-* Construção automática do tableau inicial;
-* Identificação da coluna pivô;
-* Identificação da linha pivô;
-* Execução automática do Método Simplex até atingir a solução ótima;
-* Extração da solução ótima das variáveis de decisão;
-* Cálculo do valor ótimo da função objetivo;
-* Registro do histórico completo das iterações;
-* Contagem do número de iterações realizadas;
-* Detecção de múltiplas soluções ótimas;
-* Detecção de problemas ilimitados (unbounded);
-* Tratamento de casos com RHS negativo como funcionalidade ainda não suportada.
+```txt
+app/branch_and_bound/
+├── types.ts
+├── BranchNode.ts
+├── BranchAndBoundSolver.ts
+└── index.ts
+```
 
 ---
 
-## Estrutura do Projeto
+## Estrutura do Projeto Atualizada
 
 ```txt
 start/routes.ts
@@ -43,135 +38,257 @@ start/routes.ts
 app/controllers/simplex_controller.ts
         ↓
 app/services/simplex_service.ts
+        ↑
+app/branch_and_bound/BranchAndBoundSolver.ts
 ```
 
-### Responsabilidades
-
-#### routes.ts
-
-Responsável por definir os endpoints da API.
-
-#### simplex_controller.ts
-
-Responsável por:
-
-* Receber requisições;
-* Validar dados;
-* Chamar os serviços responsáveis pela lógica do Simplex;
-* Retornar respostas para o cliente.
-
-#### simplex_service.ts
-
-Responsável por:
-
-* Construção do tableau inicial;
-* Identificação da coluna pivô;
-* Identificação da linha pivô;
-* Execução das iterações do Método Simplex;
-* Extração da solução ótima;
-* Cálculo do valor ótimo;
-* Detecção de múltiplas soluções;
-* Tratamento de problemas ilimitados.
+O `BranchAndBoundSolver` atua como uma camada superior ao `SimplexService`, sem modificar nem duplicar nenhuma de suas responsabilidades.
 
 ---
 
-## Endpoint Disponível
+## Responsabilidades dos Novos Arquivos
 
-### Resolver Problema Simplex
+#### `types.ts`
 
-```http
-POST /simplex/solve
-```
+Define todas as interfaces e tipos utilizados pelo Branch and Bound:
 
-### URL Local
+* `BranchAndBoundInput` — entrada do problema (idêntica ao `SimplexInput` original);
+* `BranchCut` — representa um corte de ramificação (`x_j ≤ b` ou `x_j ≥ b`);
+* `NodeStatus` — estado possível de um nó da árvore;
+* `BranchNode` — estrutura completa de um nó;
+* `BranchAndBoundResult` — resultado retornado pelo solver.
+
+#### `BranchNode.ts`
+
+Responsável por:
+
+* Criar nós da árvore com identificadores únicos;
+* Resetar o contador de nós a cada nova execução.
+
+#### `BranchAndBoundSolver.ts`
+
+Responsável por:
+
+* Receber o problema de PLI;
+* Gerenciar a fila de nós (BFS);
+* Montar as restrições de cada nó (originais + cortes herdados);
+* Chamar o `SimplexService` para resolver cada relaxação linear;
+* Aplicar as estratégias de poda;
+* Decidir a ramificação quando a solução for fracionária;
+* Retornar o resultado final com a árvore de busca completa.
+
+#### `index.ts`
+
+Barrel export para facilitar a importação dos módulos do Branch and Bound.
+
+---
+
+## Fluxo Completo de Execução
 
 ```txt
-http://localhost:3333/simplex/solve
+BranchAndBoundSolver.solve(input)
+        ↓
+Cria nó raiz (sem cortes adicionais)
+        ↓
+Fila BFS de nós pendentes
+        ↓
+Para cada nó:
+        ↓
+Monta restrições (originais + cortes herdados)
+        ↓
+SimplexService.createInitialTableau(...)
+        ↓
+SimplexService.solve(tableau)
+        ↓
+Obtém solução da relaxação linear
+        ↓
+Verifica condições de poda:
+  ├── Inviabilidade   → poda
+  ├── Problema ilimitado → poda
+  ├── Bound inferior ao melhor conhecido → poda
+  └── Solução inteira → atualiza melhor solução
+        ↓
+Solução fracionária:
+  ├── Filho esquerdo: x_j ≤ floor(valor)
+  └── Filho direito:  x_j ≥ ceil(valor)
 ```
+
+---
+
+## Estratégia de Branching
+
+A variável escolhida para ramificação é a **primeira variável de decisão com valor fracionário** encontrada na solução da relaxação linear.
+
+Dado um valor fracionário `v` na variável `x_j`, são criados dois nós filhos:
+
+| Nó filho | Corte adicionado |
+| -------- | ---------------- |
+| Esquerdo | `x_j ≤ floor(v)` |
+| Direito  | `x_j ≥ ceil(v)`  |
+
+---
+
+## Estratégias de Poda
+
+### Poda por inviabilidade
+
+Quando o tableau final contém algum valor de RHS negativo em uma linha de restrição, o nó é considerado inviável e descartado.
+
+### Poda por ilimitado
+
+Quando o `SimplexService` lança exceção de problema ilimitado, o nó é podado com status `unbounded`.
+
+### Poda por integralidade
+
+Quando todas as variáveis de decisão possuem valores inteiros, o nó é marcado como `integer` e sua solução é candidata à solução ótima.
+
+### Poda por bound
+
+| Tipo do problema | Condição de poda |
+| ---------------- | ---------------- |
+| Maximização | `objetivo ≤ melhor solução conhecida` |
+| Minimização | `objetivo ≥ melhor solução conhecida` |
+
+---
+
+## Estrutura do Nó
+
+```typescript
+{
+  id: string                // identificador único (ex: "node_1")
+  level: number             // profundidade na árvore
+  parentId: string | null   // identificador do nó pai
+  childrenIds: string[]     // identificadores dos nós filhos
+  cuts: BranchCut[]         // cortes acumulados desde a raiz
+  status: NodeStatus        // estado do nó
+  solution: number[] | null
+  objectiveValue: number | null
+}
+```
+
+#### Valores possíveis de `NodeStatus`
+
+| Status | Significado |
+| ------ | ----------- |
+| `pending` | Nó ainda não processado |
+| `fractional` | Solução fracionária — nó ramificado |
+| `integer` | Solução inteira — candidata ao ótimo |
+| `infeasible` | Relaxação linear inviável |
+| `unbounded` | Problema ilimitado |
+| `pruned` | Podado por bound |
+
+---
+
+## Resultado Retornado
+
+```typescript
+{
+  status: 'optimal' | 'infeasible' | 'unbounded'
+  bestSolution: number[] | null
+  bestObjectiveValue: number | null
+  nodesVisited: number
+  nodesPruned: number
+  tree: BranchNode[]
+}
+```
+
+---
+
+## Como Integrar ao Controller
+
+O `SimplexController` existente **não foi modificado**. Para expor o Branch and Bound via API, basta criar um novo endpoint e instanciar o solver:
+
+```typescript
+import { BranchAndBoundSolver } from '#branch_and_bound/index'
+
+// dentro de um novo método no controller:
+const solver = new BranchAndBoundSolver()
+const result = solver.solve({ objective, constraints, rhs, type })
+
+return response.ok({
+  message: 'Branch and Bound executado com sucesso',
+  data: result,
+})
+```
+
+A entrada segue o mesmo formato JSON já utilizado no endpoint `/simplex/solve`.
 
 ---
 
 ## Exemplo de Requisição
 
-### Body (JSON)
-
 ```json
 {
-  "objective": [3, 5],
+  "objective": [5, 4],
   "constraints": [
-    [1, 0],
-    [0, 2],
-    [3, 2]
+    [6, 4],
+    [1, 2]
   ],
-  "rhs": [4, 12, 18],
+  "rhs": [24, 6],
   "type": "max"
 }
 ```
-
-### Significado dos Campos
-
-| Campo       | Descrição                            |
-| ----------- | ------------------------------------ |
-| objective   | Coeficientes da função objetivo      |
-| constraints | Matriz das restrições                |
-| rhs         | Vetor do lado direito das restrições |
-| type        | Tipo do problema ("max" ou "min")    |
 
 ---
 
 ## Exemplo de Resposta
 
-### Resposta Resumida
-
 ```json
 {
-  "message": "Simplex executado com sucesso",
+  "message": "Branch and Bound executado com sucesso",
   "data": {
     "status": "optimal",
-    "solution": [2, 6],
-    "optimalValue": 36,
-    "hasMultipleSolutions": false,
-    "iterationsCount": 2
+    "bestSolution": [3, 1],
+    "bestObjectiveValue": 19,
+    "nodesVisited": 5,
+    "nodesPruned": 2,
+    "tree": [
+      {
+        "id": "node_1",
+        "level": 0,
+        "parentId": null,
+        "childrenIds": ["node_2", "node_3"],
+        "cuts": [],
+        "status": "fractional",
+        "solution": [3.0, 1.5],
+        "objectiveValue": 21.0
+      }
+    ]
   }
 }
 ```
 
-### Campos Retornados
+---
 
-| Campo                | Descrição                                        |
-| -------------------- | ------------------------------------------------ |
-| status               | Situação da resolução do problema                |
-| solution             | Valores encontrados para as variáveis de decisão |
-| optimalValue         | Valor ótimo da função objetivo                   |
-| hasMultipleSolutions | Indica se existem múltiplas soluções ótimas      |
-| iterationsCount      | Quantidade de iterações realizadas               |
-| initialTableau       | Tableau inicial                                  |
-| finalTableau         | Tableau final                                    |
-| iterations           | Histórico completo das iterações                 |
+## Casos Suportados
+
+* Maximização
+* Minimização
+* Solução inteira ótima
+* Problema inviável
+* Problema ilimitado
+* Poda por bound
+* Poda por integralidade
 
 ---
 
-## Possíveis Respostas de Erro
+## Limitações Conhecidas
 
-### Problema Ilimitado
+### Detecção de inviabilidade
 
-```json
-{
-  "message": "Não foi possível resolver o problema",
-  "status": "unbounded",
-  "error": "Problema ilimitado: não foi possível encontrar linha pivô"
-}
-```
+O `SimplexService` atual não lança exceção para problemas inviáveis — apenas para ilimitados. A detecção de inviabilidade no Branch and Bound utiliza uma heurística (RHS negativo no tableau final), que cobre a maioria dos casos mas não é garantida em todos os cenários. A solução definitiva exige a implementação do Simplex de Fase I ou método Big M no `SimplexService`, já listado como trabalho futuro no README original.
 
-### RHS Negativo (Não Suportado Atualmente)
+### Cortes de `x_j ≥ b` com `b > 0`
 
-```json
-{
-  "message": "Não foi possível resolver o problema",
-  "status": "unsupported",
-  "error": "O método Simplex padrão implementado atualmente exige que todos os valores de rhs sejam maiores ou iguais a zero. Casos com rhs negativo exigem tratamento adicional, como Big M ou método das Duas Fases."
-}
-```
+Cortes do tipo `≥` são convertidos internamente para `≤` por multiplicação por `-1`, resultando em RHS negativo. Isso contorna a restrição do controller (que bloqueia RHS negativo nas requisições externas) sem violar a corretude matemática, pois a operação ocorre apenas internamente ao solver. Deve ser revisado caso o `SimplexService` seja estendido para suportar Fase I.
+
+### Sem limite de nós
+
+Não há controle de `maxNodes`. Para problemas com muitas variáveis inteiras, a árvore pode crescer de forma exponencial. Recomenda-se adicionar um limite configurável antes de utilizar em produção.
+
+### Programação Inteira Mista (MILP)
+
+A implementação atual trata todas as variáveis de decisão como inteiras. A arquitetura foi projetada para suportar MILP futuramente (basta indicar quais variáveis são inteiras em `BranchAndBoundInput`), mas essa funcionalidade ainda não está implementada.
 
 ---
 
@@ -179,25 +296,21 @@ http://localhost:3333/simplex/solve
 
 ### Implementado
 
-* Estrutura completa da API;
-* Validação dos dados;
-* Construção do tableau inicial;
-* Método Simplex tabular para maximização;
-* Critério de parada;
-* Histórico completo das iterações;
-* Extração da solução ótima;
-* Cálculo do valor ótimo de Z;
-* Detecção de múltiplas soluções ótimas;
-* Tratamento de problemas ilimitados;
-* Tratamento de casos com RHS negativo.
+* Estrutura completa do Branch and Bound;
+* Reutilização integral do `SimplexService` existente;
+* Estratégia de branching pela primeira variável fracionária;
+* Poda por inviabilidade;
+* Poda por problema ilimitado;
+* Poda por bound (maximização e minimização);
+* Poda por integralidade;
+* Preservação da árvore de busca completa em memória;
 
 ### Em Desenvolvimento
 
-* Integração com Forma Padrão;
-* Suporte a restrições do tipo `>=` e `=`;
-* Método Big M;
-* Revisão completa da minimização;
-* Casos avançados de inviabilidade.
+* Suporte a MILP (variáveis mistas inteiras e contínuas);
+* Limite configurável de nós visitados;
+* Detecção robusta de inviabilidade via Fase I ou Big M;
+* Estratégias alternativas de branching (most fractional, pseudo-cost).
 
 ---
 
@@ -205,75 +318,19 @@ http://localhost:3333/simplex/solve
 
 ### main
 
-Versão base do backend.
+Versão base do backend com o Método Simplex Tabular.
 
 ### simplex-loop
 
-Branch funcional contendo a implementação atual do Método Simplex utilizada para testes e integração com o frontend.
+Branch funcional contendo a implementação do Método Simplex utilizada para testes e integração com o frontend.
 
 ### integrate-colleague-simplex
 
-Branch experimental destinada à integração de uma arquitetura mais avançada contendo suporte futuro para Forma Padrão, Método Big M e restrições do tipo `>=` e `=`.
+Branch experimental destinada à integração de arquitetura mais avançada com suporte futuro a Forma Padrão, Método Big M e restrições `>=` e `=`.
 
----
+### branch-and-bound *(novo)*
 
-## Como Executar o Projeto
-
-### Clonar o Repositório
-
-```bash
-git clone https://github.com/SamuelNascimentoFocas/simplex-system-backend.git
-```
-
-### Acessar a Pasta
-
-```bash
-cd simplex-system-backend
-```
-
-### Instalar Dependências
-
-```bash
-npm install
-```
-
-### Executar em Desenvolvimento
-
-```bash
-npm run dev
-```
-
-O servidor será iniciado em:
-
-```txt
-http://localhost:3333
-```
-
----
-
-## Integração com Frontend
-
-O frontend pode consumir o endpoint:
-
-```http
-POST /simplex/solve
-```
-
-enviando um JSON contendo:
-
-* função objetivo;
-* restrições;
-* vetor RHS;
-* tipo do problema.
-
-A resposta retorna:
-
-* solução ótima;
-* valor ótimo;
-* quantidade de iterações;
-* histórico completo das iterações;
-* tableau inicial;
-* tableau final.
+Branch contendo a implementação do método Branch and Bound para resolução de problemas de Programação Linear Inteira.
 
 ---
 
@@ -287,4 +344,4 @@ https://github.com/SamuelNascimentoFocas/simplex-system-backend
 
 Projeto desenvolvido para a disciplina de Pesquisa Operacional.
 
-Equipe responsável pelo desenvolvimento do sistema Simplex.
+Equipe responsável pelo desenvolvimento do sistema Simplex e da extensão Branch and Bound.

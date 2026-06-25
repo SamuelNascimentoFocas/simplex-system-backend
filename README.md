@@ -1,8 +1,10 @@
-# Branch and Bound — Extensão do Simplex System Backend
+# Dados Gráficos — Extensão do Simplex System Backend
 
 Extensão desenvolvida em TypeScript para o projeto da disciplina de Pesquisa Operacional.
 
-O objetivo desta extensão é evoluir o núcleo matemático da aplicação para suportar **Programação Linear Inteira (PLI)** por meio do método **Branch and Bound**, reutilizando integralmente o solver Simplex já existente.
+O objetivo desta extensão é enriquecer a resposta da API com dados matemáticos estruturados que permitam ao frontend construir a visualização gráfica do problema de Programação Linear resolvido pelo Método Simplex.
+
+O backend não gera imagens nem gráficos. Sua responsabilidade é exclusivamente calcular e fornecer os dados necessários para que o frontend realize a renderização.
 
 ---
 
@@ -18,15 +20,35 @@ O objetivo desta extensão é evoluir o núcleo matemático da aplicação para 
 
 ## O que foi alterado
 
-### Arquivos adicionados
+### Arquivos modificados
 
-```txt
-app/branch_and_bound/
-├── types.ts
-├── BranchNode.ts
-├── BranchAndBoundSolver.ts
-└── index.ts
+#### `app/services/simplex_service.ts`
+
+Adicionada a exportação do tipo `SimplexResult` ao final do arquivo:
+
+```typescript
+export type SimplexResult = ReturnType<SimplexService['solve']>
 ```
+
+Nenhuma lógica foi alterada.
+
+#### `app/controllers/simplex_controller.ts`
+
+Adicionadas as seguintes mudanças:
+
+* Importação do novo `GraphService`;
+* Chamada ao `GraphService` após a resolução algébrica;
+* Inclusão do campo `graphData` no objeto de resposta.
+
+Nenhuma validação existente foi modificada. A lógica de resolução algébrica permanece intacta.
+
+---
+
+### Arquivo adicionado
+
+#### `app/services/graph_service.ts`
+
+Novo serviço responsável por todos os cálculos matemáticos necessários para a visualização gráfica. Não possui dependência do AdonisJS nem do `SimplexService`.
 
 ---
 
@@ -36,182 +58,103 @@ app/branch_and_bound/
 start/routes.ts
         ↓
 app/controllers/simplex_controller.ts
-        ↓
-app/services/simplex_service.ts
-        ↑
-app/branch_and_bound/BranchAndBoundSolver.ts
+        ↓                    ↓
+app/services/         app/services/
+simplex_service.ts    graph_service.ts
 ```
-
-O `BranchAndBoundSolver` atua como uma camada superior ao `SimplexService`, sem modificar nem duplicar nenhuma de suas responsabilidades.
 
 ---
 
-## Responsabilidades dos Novos Arquivos
+## Responsabilidades do Novo Arquivo
 
-#### `types.ts`
-
-Define todas as interfaces e tipos utilizados pelo Branch and Bound:
-
-* `BranchAndBoundInput` — entrada do problema (idêntica ao `SimplexInput` original);
-* `BranchCut` — representa um corte de ramificação (`x_j ≤ b` ou `x_j ≥ b`);
-* `NodeStatus` — estado possível de um nó da árvore;
-* `BranchNode` — estrutura completa de um nó;
-* `BranchAndBoundResult` — resultado retornado pelo solver.
-
-#### `BranchNode.ts`
+#### `graph_service.ts`
 
 Responsável por:
 
-* Criar nós da árvore com identificadores únicos;
-* Resetar o contador de nós a cada nova execução.
+* Verificar se o problema possui exatamente 2 variáveis de decisão;
+* Calcular os interceptos de cada restrição com os eixos coordenados;
+* Enumerar todos os vértices da região viável por interseção de pares de restrições;
+* Filtrar pontos inviáveis e deduplicar pontos numericamente próximos;
+* Ordenar os vértices em sentido anti-horário para fechamento do polígono;
+* Calcular as curvas de nível da função objetivo;
+* Identificar o vértice correspondente ao ponto ótimo;
+* Calcular os limites sugeridos para o canvas do frontend.
 
-#### `BranchAndBoundSolver.ts`
+---
 
-Responsável por:
+## Limitação do Método Gráfico
 
-* Receber o problema de PLI;
-* Gerenciar a fila de nós (BFS);
-* Montar as restrições de cada nó (originais + cortes herdados);
-* Chamar o `SimplexService` para resolver cada relaxação linear;
-* Aplicar as estratégias de poda;
-* Decidir a ramificação quando a solução for fracionária;
-* Retornar o resultado final com a árvore de busca completa.
+O método gráfico está disponível apenas para problemas com exatamente **2 variáveis de decisão**.
 
-#### `index.ts`
+Quando o problema possuir outro número de variáveis, a resolução algébrica ocorre normalmente e o campo `graphData` retorna:
 
-Barrel export para facilitar a importação dos módulos do Branch and Bound.
+```json
+{
+  "available": false,
+  "unavailableReason": "O método gráfico está disponível apenas para problemas com 2 variáveis de decisão. Este problema possui 3 variáveis."
+}
+```
+
+---
+
+## Separação de Responsabilidades
+
+| Responsabilidade | Onde fica |
+| ---------------- | --------- |
+| Resolver o problema (Simplex) | `SimplexService` — sem alterações |
+| Calcular dados matemáticos para o gráfico | `GraphService` — novo serviço |
+| Orquestrar chamadas e montar resposta | `SimplexController` — adaptação mínima |
+| Renderizar o gráfico | Frontend |
+| Determinar escala visual, cores e animações | Frontend |
 
 ---
 
 ## Fluxo Completo de Execução
 
 ```txt
-BranchAndBoundSolver.solve(input)
+POST /simplex/solve
         ↓
-Cria nó raiz (sem cortes adicionais)
-        ↓
-Fila BFS de nós pendentes
-        ↓
-Para cada nó:
-        ↓
-Monta restrições (originais + cortes herdados)
+SimplexController valida body
         ↓
 SimplexService.createInitialTableau(...)
         ↓
 SimplexService.solve(tableau)
         ↓
-Obtém solução da relaxação linear
+SimplexService.extractSolution(...)
+SimplexService.hasMultipleOptimalSolutions(...)
         ↓
-Verifica condições de poda:
-  ├── Inviabilidade   → poda
-  ├── Problema ilimitado → poda
-  ├── Bound inferior ao melhor conhecido → poda
-  └── Solução inteira → atualiza melhor solução
+GraphService.compute(...)
+  ├── Verifica número de variáveis
+  ├── Calcula interceptos das restrições
+  ├── Enumera e filtra vértices da região viável
+  ├── Ordena vértices (sentido anti-horário)
+  ├── Calcula curvas de nível
+  ├── Identifica vértice ótimo
+  └── Calcula viewport
         ↓
-Solução fracionária:
-  ├── Filho esquerdo: x_j ≤ floor(valor)
-  └── Filho direito:  x_j ≥ ceil(valor)
+response.ok({ ...dadosAlgébricos, graphData })
 ```
 
 ---
 
-## Estratégia de Branching
+## Dados Retornados em `graphData`
 
-A variável escolhida para ramificação é a **primeira variável de decisão com valor fracionário** encontrada na solução da relaxação linear.
+### Quando disponível (`available: true`)
 
-Dado um valor fracionário `v` na variável `x_j`, são criados dois nós filhos:
-
-| Nó filho | Corte adicionado |
-| -------- | ---------------- |
-| Esquerdo | `x_j ≤ floor(v)` |
-| Direito  | `x_j ≥ ceil(v)`  |
-
----
-
-## Estratégias de Poda
-
-### Poda por inviabilidade
-
-Quando o tableau final contém algum valor de RHS negativo em uma linha de restrição, o nó é considerado inviável e descartado.
-
-### Poda por ilimitado
-
-Quando o `SimplexService` lança exceção de problema ilimitado, o nó é podado com status `unbounded`.
-
-### Poda por integralidade
-
-Quando todas as variáveis de decisão possuem valores inteiros, o nó é marcado como `integer` e sua solução é candidata à solução ótima.
-
-### Poda por bound
-
-| Tipo do problema | Condição de poda |
-| ---------------- | ---------------- |
-| Maximização | `objetivo ≤ melhor solução conhecida` |
-| Minimização | `objetivo ≥ melhor solução conhecida` |
-
----
-
-## Estrutura do Nó
-
-```typescript
-{
-  id: string                // identificador único (ex: "node_1")
-  level: number             // profundidade na árvore
-  parentId: string | null   // identificador do nó pai
-  childrenIds: string[]     // identificadores dos nós filhos
-  cuts: BranchCut[]         // cortes acumulados desde a raiz
-  status: NodeStatus        // estado do nó
-  solution: number[] | null
-  objectiveValue: number | null
-}
-```
-
-#### Valores possíveis de `NodeStatus`
-
-| Status | Significado |
-| ------ | ----------- |
-| `pending` | Nó ainda não processado |
-| `fractional` | Solução fracionária — nó ramificado |
-| `integer` | Solução inteira — candidata ao ótimo |
-| `infeasible` | Relaxação linear inviável |
-| `unbounded` | Problema ilimitado |
-| `pruned` | Podado por bound |
-
----
-
-## Resultado Retornado
-
-```typescript
-{
-  status: 'optimal' | 'infeasible' | 'unbounded'
-  bestSolution: number[] | null
-  bestObjectiveValue: number | null
-  nodesVisited: number
-  nodesPruned: number
-  tree: BranchNode[]
-}
-```
-
----
-
-## Como Integrar ao Controller
-
-O `SimplexController` existente **não foi modificado**. Para expor o Branch and Bound via API, basta criar um novo endpoint e instanciar o solver:
-
-```typescript
-import { BranchAndBoundSolver } from '#branch_and_bound/index'
-
-// dentro de um novo método no controller:
-const solver = new BranchAndBoundSolver()
-const result = solver.solve({ objective, constraints, rhs, type })
-
-return response.ok({
-  message: 'Branch and Bound executado com sucesso',
-  data: result,
-})
-```
-
-A entrada segue o mesmo formato JSON já utilizado no endpoint `/simplex/solve`.
+| Campo | Descrição |
+| ----- | --------- |
+| `viewport.xMax` | Limite sugerido do eixo x para o canvas do frontend |
+| `viewport.yMax` | Limite sugerido do eixo y para o canvas do frontend |
+| `constraints[i].interceptX1` | Ponto onde a reta da restrição cruza o eixo x2 = 0 |
+| `constraints[i].interceptX2` | Ponto onde a reta da restrição cruza o eixo x1 = 0 |
+| `constraints[i].validSide` | Indica que o semiplano válido contém a origem |
+| `feasibleRegion.vertices` | Lista de vértices do polígono convexo com coordenadas |
+| `feasibleRegion.polygon` | Sequência de IDs dos vértices em sentido anti-horário |
+| `objectiveFunction.levelCurves` | Valores de Z pré-calculados para retas paralelas |
+| `optimalPoint.x1` | Coordenada x1 do ponto ótimo |
+| `optimalPoint.x2` | Coordenada x2 do ponto ótimo |
+| `optimalPoint.optimalValue` | Valor ótimo da função objetivo |
+| `optimalPoint.vertexId` | Referência ao vértice da região viável correspondente ao ótimo |
 
 ---
 
@@ -219,12 +162,13 @@ A entrada segue o mesmo formato JSON já utilizado no endpoint `/simplex/solve`.
 
 ```json
 {
-  "objective": [5, 4],
+  "objective": [3, 5],
   "constraints": [
-    [6, 4],
-    [1, 2]
+    [1, 0],
+    [0, 2],
+    [3, 2]
   ],
-  "rhs": [24, 6],
+  "rhs": [4, 12, 18],
   "type": "max"
 }
 ```
@@ -235,60 +179,82 @@ A entrada segue o mesmo formato JSON já utilizado no endpoint `/simplex/solve`.
 
 ```json
 {
-  "message": "Branch and Bound executado com sucesso",
+  "message": "Simplex executado com sucesso",
   "data": {
     "status": "optimal",
-    "bestSolution": [3, 1],
-    "bestObjectiveValue": 19,
-    "nodesVisited": 5,
-    "nodesPruned": 2,
-    "tree": [
-      {
-        "id": "node_1",
-        "level": 0,
-        "parentId": null,
-        "childrenIds": ["node_2", "node_3"],
-        "cuts": [],
-        "status": "fractional",
-        "solution": [3.0, 1.5],
-        "objectiveValue": 21.0
+    "solution": [2, 6],
+    "optimalValue": 36,
+    "hasMultipleSolutions": false,
+    "iterationsCount": 2,
+
+    "graphData": {
+      "available": true,
+
+      "viewport": {
+        "xMax": 6.6,
+        "yMax": 9.9
+      },
+
+      "constraints": [
+        {
+          "index": 0,
+          "coefficients": [1, 0],
+          "rhs": 4,
+          "interceptX1": { "x1": 4.0, "x2": 0.0 },
+          "interceptX2": null,
+          "validSide": "origin"
+        },
+        {
+          "index": 1,
+          "coefficients": [0, 2],
+          "rhs": 12,
+          "interceptX1": null,
+          "interceptX2": { "x1": 0.0, "x2": 6.0 },
+          "validSide": "origin"
+        },
+        {
+          "index": 2,
+          "coefficients": [3, 2],
+          "rhs": 18,
+          "interceptX1": { "x1": 6.0, "x2": 0.0 },
+          "interceptX2": { "x1": 0.0, "x2": 9.0 },
+          "validSide": "origin"
+        }
+      ],
+
+      "feasibleRegion": {
+        "vertices": [
+          { "id": "v0", "x1": 0.0, "x2": 0.0 },
+          { "id": "v1", "x1": 4.0, "x2": 0.0 },
+          { "id": "v2", "x1": 4.0, "x2": 3.0 },
+          { "id": "v3", "x1": 2.0, "x2": 6.0 },
+          { "id": "v4", "x1": 0.0, "x2": 6.0 }
+        ],
+        "polygon": ["v0", "v1", "v2", "v3", "v4"]
+      },
+
+      "objectiveFunction": {
+        "coefficients": [3, 5],
+        "type": "max",
+        "levelCurves": [
+          { "z": 0,  "label": "Z = 0"  },
+          { "z": 9,  "label": "Z = 9"  },
+          { "z": 18, "label": "Z = 18" },
+          { "z": 27, "label": "Z = 27" },
+          { "z": 36, "label": "Z = 36" }
+        ]
+      },
+
+      "optimalPoint": {
+        "x1": 2.0,
+        "x2": 6.0,
+        "optimalValue": 36,
+        "vertexId": "v3"
       }
-    ]
+    }
   }
 }
 ```
-
----
-
-## Casos Suportados
-
-* Maximização
-* Minimização
-* Solução inteira ótima
-* Problema inviável
-* Problema ilimitado
-* Poda por bound
-* Poda por integralidade
-
----
-
-## Limitações Conhecidas
-
-### Detecção de inviabilidade
-
-O `SimplexService` atual não lança exceção para problemas inviáveis — apenas para ilimitados. A detecção de inviabilidade no Branch and Bound utiliza uma heurística (RHS negativo no tableau final), que cobre a maioria dos casos mas não é garantida em todos os cenários. A solução definitiva exige a implementação do Simplex de Fase I ou método Big M no `SimplexService`, já listado como trabalho futuro no README original.
-
-### Cortes de `x_j ≥ b` com `b > 0`
-
-Cortes do tipo `≥` são convertidos internamente para `≤` por multiplicação por `-1`, resultando em RHS negativo. Isso contorna a restrição do controller (que bloqueia RHS negativo nas requisições externas) sem violar a corretude matemática, pois a operação ocorre apenas internamente ao solver. Deve ser revisado caso o `SimplexService` seja estendido para suportar Fase I.
-
-### Sem limite de nós
-
-Não há controle de `maxNodes`. Para problemas com muitas variáveis inteiras, a árvore pode crescer de forma exponencial. Recomenda-se adicionar um limite configurável antes de utilizar em produção.
-
-### Programação Inteira Mista (MILP)
-
-A implementação atual trata todas as variáveis de decisão como inteiras. A arquitetura foi projetada para suportar MILP futuramente (basta indicar quais variáveis são inteiras em `BranchAndBoundInput`), mas essa funcionalidade ainda não está implementada.
 
 ---
 
@@ -296,21 +262,20 @@ A implementação atual trata todas as variáveis de decisão como inteiras. A a
 
 ### Implementado
 
-* Estrutura completa do Branch and Bound;
-* Reutilização integral do `SimplexService` existente;
-* Estratégia de branching pela primeira variável fracionária;
-* Poda por inviabilidade;
-* Poda por problema ilimitado;
-* Poda por bound (maximização e minimização);
-* Poda por integralidade;
-* Preservação da árvore de busca completa em memória;
+* Cálculo de interceptos de cada restrição com os eixos coordenados;
+* Enumeração completa dos vértices da região viável;
+* Filtragem de pontos inviáveis e deduplicação numérica;
+* Ordenação dos vértices em sentido anti-horário;
+* Cálculo de curvas de nível da função objetivo;
+* Identificação do vértice correspondente ao ponto ótimo;
+* Cálculo dos limites do viewport com margem;
+* Resposta estruturada para problemas com mais de 2 variáveis.
 
 ### Em Desenvolvimento
 
-* Suporte a MILP (variáveis mistas inteiras e contínuas);
-* Limite configurável de nós visitados;
-* Detecção robusta de inviabilidade via Fase I ou Big M;
-* Estratégias alternativas de branching (most fractional, pseudo-cost).
+* Suporte a restrições do tipo `>=` e `=` na construção da região viável;
+* Detecção e representação gráfica de regiões ilimitadas;
+* Dados gráficos para o método Branch and Bound.
 
 ---
 
@@ -328,9 +293,13 @@ Branch funcional contendo a implementação do Método Simplex utilizada para te
 
 Branch experimental destinada à integração de arquitetura mais avançada com suporte futuro a Forma Padrão, Método Big M e restrições `>=` e `=`.
 
-### branch-and-bound *(novo)*
+### branch-and-bound
 
 Branch contendo a implementação do método Branch and Bound para resolução de problemas de Programação Linear Inteira.
+
+### solucao-grafica *(novo)*
+
+Branch contendo a extensão de dados gráficos para visualização da região viável, função objetivo e ponto ótimo.
 
 ---
 
@@ -344,4 +313,4 @@ https://github.com/SamuelNascimentoFocas/simplex-system-backend
 
 Projeto desenvolvido para a disciplina de Pesquisa Operacional.
 
-Equipe responsável pelo desenvolvimento do sistema Simplex e da extensão Branch and Bound.
+Equipe responsável pelo desenvolvimento do sistema Simplex, da extensão Branch and Bound e da extensão de dados gráficos.

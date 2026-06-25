@@ -1,5 +1,6 @@
 import type { HttpContext } from '@adonisjs/core/http'
 import SimplexService from '#services/simplex_service'
+import GraphService from '#services/graph_service'
 
 export default class SimplexController {
   async solve({ request, response }: HttpContext) {
@@ -98,6 +99,18 @@ export default class SimplexController {
       objective.length
     )
 
+    const graphService = new GraphService()
+ 
+    const graphData = graphService.compute(
+      objective,
+      constraints,
+      rhs,
+      type,
+      extractedResult.solution,
+      extractedResult.optimalValue
+    )
+
+
     return response.ok({
       message: 'Simplex executado com sucesso',
       data: {
@@ -113,6 +126,7 @@ export default class SimplexController {
         initialTableau: tableau,
         finalTableau: result.finalTableau,
         iterations: result.iterations,
+        graphData,
       },
     })
   }

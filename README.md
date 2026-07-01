@@ -1,10 +1,8 @@
-# Dados Gráficos — Extensão do Simplex System Backend
+# Suporte a Restrições `>=` e `=` via Método Big M
 
 Extensão desenvolvida em TypeScript para o projeto da disciplina de Pesquisa Operacional.
 
-O objetivo desta extensão é enriquecer a resposta da API com dados matemáticos estruturados que permitam ao frontend construir a visualização gráfica do problema de Programação Linear resolvido pelo Método Simplex.
-
-O backend não gera imagens nem gráficos. Sua responsabilidade é exclusivamente calcular e fornecer os dados necessários para que o frontend realize a renderização.
+O objetivo desta extensão é evoluir o núcleo matemático da aplicação para suportar restrições do tipo `>=` e `=` além das restrições `<=` já suportadas, utilizando o **Método Big M** para introdução de variáveis artificiais.
 
 ---
 
@@ -24,235 +22,261 @@ O backend não gera imagens nem gráficos. Sua responsabilidade é exclusivament
 
 #### `app/services/simplex_service.ts`
 
-Adicionada a exportação do tipo `SimplexResult` ao final do arquivo:
+As seguintes mudanças foram realizadas:
+
+**Novos tipos exportados**
 
 ```typescript
-export type SimplexResult = ReturnType<SimplexService['solve']>
-```
+export type ConstraintOperator = '<=' | '>=' | '='
 
-Nenhuma lógica foi alterada.
+export type ConstraintInput = {
+  coefficients: number[]
+  operator: ConstraintOperator
+  rhs: number
+}
 
-#### `app/controllers/simplex_controller.ts`
-
-Adicionadas as seguintes mudanças:
-
-* Importação do novo `GraphService`;
-* Chamada ao `GraphService` após a resolução algébrica;
-* Inclusão do campo `graphData` no objeto de resposta.
-
-Nenhuma validação existente foi modificada. A lógica de resolução algébrica permanece intacta.
-
----
-
-### Arquivo adicionado
-
-#### `app/services/graph_service.ts`
-
-Novo serviço responsável por todos os cálculos matemáticos necessários para a visualização gráfica. Não possui dependência do AdonisJS nem do `SimplexService`.
-
----
-
-## Estrutura do Projeto Atualizada
-
-```txt
-start/routes.ts
-        ↓
-app/controllers/simplex_controller.ts
-        ↓                    ↓
-app/services/         app/services/
-simplex_service.ts    graph_service.ts
-```
-
----
-
-## Responsabilidades do Novo Arquivo
-
-#### `graph_service.ts`
-
-Responsável por:
-
-* Verificar se o problema possui exatamente 2 variáveis de decisão;
-* Calcular os interceptos de cada restrição com os eixos coordenados;
-* Enumerar todos os vértices da região viável por interseção de pares de restrições;
-* Filtrar pontos inviáveis e deduplicar pontos numericamente próximos;
-* Ordenar os vértices em sentido anti-horário para fechamento do polígono;
-* Calcular as curvas de nível da função objetivo;
-* Identificar o vértice correspondente ao ponto ótimo;
-* Calcular os limites sugeridos para o canvas do frontend.
-
----
-
-## Limitação do Método Gráfico
-
-O método gráfico está disponível apenas para problemas com exatamente **2 variáveis de decisão**.
-
-Quando o problema possuir outro número de variáveis, a resolução algébrica ocorre normalmente e o campo `graphData` retorna:
-
-```json
-{
-  "available": false,
-  "unavailableReason": "O método gráfico está disponível apenas para problemas com 2 variáveis de decisão. Este problema possui 3 variáveis."
+export type SimplexInput = {
+  objective: number[]
+  constraints: ConstraintInput[]
+  type: 'max' | 'min'
 }
 ```
 
----
+O tipo `ConstraintInput` substitui o uso de `number[][]` para restrições, incorporando o operador e o RHS em cada restrição individualmente. O tipo `SimplexInput` foi atualizado para refletir essa mudança.
 
-## Separação de Responsabilidades
+**Novo método público: `createInitialTableauWithMeta`**
 
-| Responsabilidade | Onde fica |
-| ---------------- | --------- |
-| Resolver o problema (Simplex) | `SimplexService` — sem alterações |
-| Calcular dados matemáticos para o gráfico | `GraphService` — novo serviço |
-| Orquestrar chamadas e montar resposta | `SimplexController` — adaptação mínima |
-| Renderizar o gráfico | Frontend |
-| Determinar escala visual, cores e animações | Frontend |
-
----
-
-## Fluxo Completo de Execução
-
-```txt
-POST /simplex/solve
-        ↓
-SimplexController valida body
-        ↓
-SimplexService.createInitialTableau(...)
-        ↓
-SimplexService.solve(tableau)
-        ↓
-SimplexService.extractSolution(...)
-SimplexService.hasMultipleOptimalSolutions(...)
-        ↓
-GraphService.compute(...)
-  ├── Verifica número de variáveis
-  ├── Calcula interceptos das restrições
-  ├── Enumera e filtra vértices da região viável
-  ├── Ordena vértices (sentido anti-horário)
-  ├── Calcula curvas de nível
-  ├── Identifica vértice ótimo
-  └── Calcula viewport
-        ↓
-response.ok({ ...dadosAlgébricos, graphData })
+```typescript
+createInitialTableauWithMeta(input: SimplexInput): StandardForm
 ```
 
+Retorna o tableau inicial junto com os metadados da forma padrão, incluindo `artificialVarIndices` e `hasArtificialVars`. O controller utiliza esses dados para verificar inviabilidade após a resolução.
+
+O método `createInitialTableau` foi preservado como fachada pública para compatibilidade com outros consumidores existentes.
+
+**Novo método público: `isInfeasible`**
+
+```typescript
+isInfeasible(finalTableau: number[][], artificialVarIndices: number[]): boolean
+```
+
+Verifica se alguma variável artificial permaneceu na base com valor positivo ao final do Simplex, o que indica que o problema não possui solução viável. Essa verificação é obrigatória com Big M, pois o algoritmo converge mesmo em problemas inviáveis — a penalização apenas encarece, mas não impede a permanência de artificiais na base.
+
+**Novo método privado: `convertToStandardForm`**
+
+Responsável por converter o problema para a forma padrão expandida e montar o tableau inicial com penalização Big M. Implementa as seguintes regras por operador:
+
+| Operador | Variáveis adicionadas |
+| -------- | --------------------- |
+| `<=` | Variável de folga (`+1`) |
+| `>=` | Variável de excesso (`-1`) + variável artificial (`+1`) |
+| `=` | Variável artificial (`+1`) |
+
+Restrições com `rhs < 0` são normalizadas automaticamente: a restrição é multiplicada por `-1` e o operador é invertido antes da alocação das variáveis extras.
+
+**Novo método privado: `adjustObjectiveForArtificials`**
+
+Realiza o ajuste canônico obrigatório após a inserção das penalidades Big M na linha objetivo. Para cada variável artificial na base inicial, subtrai `M` vezes a linha de restrição correspondente da linha objetivo, zerando os coeficientes das artificiais na linha Z e estabelecendo a forma canônica necessária para o critério de parada do Simplex.
+
+**Métodos não alterados**
+
+Os seguintes métodos permaneceram sem nenhuma modificação:
+
+* `findPivotColumn`
+* `findPivotRow`
+* `pivot`
+* `solve`
+* `extractSolution`
+* `hasMultipleOptimalSolutions`
+
 ---
 
-## Dados Retornados em `graphData`
+#### `app/controllers/simplex_controller.ts`
 
-### Quando disponível (`available: true`)
+**Novo contrato da API**
 
-| Campo | Descrição |
-| ----- | --------- |
-| `viewport.xMax` | Limite sugerido do eixo x para o canvas do frontend |
-| `viewport.yMax` | Limite sugerido do eixo y para o canvas do frontend |
-| `constraints[i].interceptX1` | Ponto onde a reta da restrição cruza o eixo x2 = 0 |
-| `constraints[i].interceptX2` | Ponto onde a reta da restrição cruza o eixo x1 = 0 |
-| `constraints[i].validSide` | Indica que o semiplano válido contém a origem |
-| `feasibleRegion.vertices` | Lista de vértices do polígono convexo com coordenadas |
-| `feasibleRegion.polygon` | Sequência de IDs dos vértices em sentido anti-horário |
-| `objectiveFunction.levelCurves` | Valores de Z pré-calculados para retas paralelas |
-| `optimalPoint.x1` | Coordenada x1 do ponto ótimo |
-| `optimalPoint.x2` | Coordenada x2 do ponto ótimo |
-| `optimalPoint.optimalValue` | Valor ótimo da função objetivo |
-| `optimalPoint.vertexId` | Referência ao vértice da região viável correspondente ao ótimo |
+O campo `rhs` separado foi removido. O campo `constraints` deixou de ser `number[][]` e passou a ser um array de objetos:
+
+```json
+{
+  "coefficients": [1, 2],
+  "operator": "<=",
+  "rhs": 4
+}
+```
+
+**Validações adaptadas**
+
+* Removida a validação que rejeitava `rhs < 0` — o conversor trata isso internamente;
+* Adicionada validação do campo `operator` contra os valores `"<="`, `">="` e `"="`;
+* Adicionada validação de que `rhs` é um número finito, sem restrição de sinal;
+* As validações de `coefficients` foram adaptadas para a nova estrutura de objeto.
+
+**Detecção de inviabilidade**
+
+Após a resolução, o controller verifica inviabilidade chamando `isInfeasible` com os `artificialVarIndices` retornados por `createInitialTableauWithMeta`. Quando inviável, retorna:
+
+```json
+{
+  "message": "Não foi possível resolver o problema",
+  "status": "infeasible",
+  "error": "O problema não possui solução viável. As restrições são incompatíveis entre si."
+}
+```
+
+**Compatibilidade com `GraphService`**
+
+O `GraphService` foi projetado para receber `coefficients` e `rhs` separados. O controller extrai esses campos das restrições no novo formato antes de chamar o serviço, sem modificar o `GraphService`.
 
 ---
 
-## Exemplo de Requisição
+## Novo Contrato da API
+
+### Endpoint
+
+```http
+POST /simplex/solve
+```
+
+### Body (JSON)
+
+```json
+{
+  "objective": [5, 4, 3],
+  "constraints": [
+    { "coefficients": [6, 4, 2], "operator": "<=", "rhs": 240 },
+    { "coefficients": [3, 2, 5], "operator": "<=", "rhs": 270 },
+    { "coefficients": [5, 6, 5], "operator": "<=", "rhs": 420 },
+    { "coefficients": [1, 0, 0], "operator": ">=", "rhs": 10  },
+    { "coefficients": [0, 1, 0], "operator": "=",  "rhs": 15  }
+  ],
+  "type": "max"
+}
+```
+
+### Campos
+
+| Campo | Tipo | Descrição |
+| ----- | ---- | --------- |
+| `objective` | `number[]` | Coeficientes da função objetivo |
+| `constraints` | `ConstraintInput[]` | Array de restrições |
+| `constraints[i].coefficients` | `number[]` | Coeficientes da restrição |
+| `constraints[i].operator` | `"<="` \| `">="` \| `"="` | Operador da restrição |
+| `constraints[i].rhs` | `number` | Lado direito da restrição (pode ser negativo) |
+| `type` | `"max"` \| `"min"` | Tipo do problema |
+
+---
+
+## Funcionamento do Método Big M
+
+O Método Big M é uma estratégia para lidar com restrições `>=` e `=`, que não possuem variável de folga para servir como base inicial viável.
+
+### Variáveis artificiais
+
+Para cada restrição `>=` ou `=`, uma variável artificial é introduzida para fornecer uma base inicial viável. Essas variáveis não têm significado econômico e devem sair da base antes da solução ótima.
+
+### Penalização
+
+Cada variável artificial recebe um coeficiente `+M` na função objetivo (onde `M = 10.000.000`), tornando economicamente proibitório que permaneçam na solução ótima:
+
+* Em **maximização**: manter uma artificial reduz Z em M, forçando o Simplex a retirá-la da base;
+* Em **minimização**: manter uma artificial aumenta Z em M, com o mesmo efeito.
+
+### Ajuste canônico
+
+Antes de iniciar o loop de pivotamento, a linha objetivo é ajustada para a forma canônica. Para cada artificial na base inicial, subtrai-se `M` vezes a linha de restrição correspondente da linha objetivo. Sem esse ajuste, o critério de parada do Simplex falharia.
+
+### Detecção de inviabilidade
+
+Após a convergência do Simplex, verifica-se se alguma variável artificial permaneceu na base com valor positivo. Se sim, o problema não possui solução viável e a API retorna `status: "infeasible"`.
+
+---
+
+## Exemplos de Requisição
+
+### Apenas `<=` (comportamento original preservado)
 
 ```json
 {
   "objective": [3, 5],
   "constraints": [
-    [1, 0],
-    [0, 2],
-    [3, 2]
+    { "coefficients": [1, 0], "operator": "<=", "rhs": 4  },
+    { "coefficients": [0, 2], "operator": "<=", "rhs": 12 },
+    { "coefficients": [3, 2], "operator": "<=", "rhs": 18 }
   ],
-  "rhs": [4, 12, 18],
+  "type": "max"
+}
+```
+
+### Com `>=`
+
+```json
+{
+  "objective": [2, 3],
+  "constraints": [
+    { "coefficients": [1, 1], "operator": "<=", "rhs": 4 },
+    { "coefficients": [1, 0], "operator": ">=", "rhs": 1 },
+    { "coefficients": [0, 1], "operator": ">=", "rhs": 1 }
+  ],
+  "type": "max"
+}
+```
+
+### Com `=`
+
+```json
+{
+  "objective": [3, 5],
+  "constraints": [
+    { "coefficients": [1, 1], "operator": "<=", "rhs": 10 },
+    { "coefficients": [1, 0], "operator": "=",  "rhs": 4  }
+  ],
+  "type": "max"
+}
+```
+
+### Problema inviável
+
+```json
+{
+  "objective": [1, 1],
+  "constraints": [
+    { "coefficients": [1, 1], "operator": "<=", "rhs": 5 },
+    { "coefficients": [1, 1], "operator": ">=", "rhs": 8 }
+  ],
   "type": "max"
 }
 ```
 
 ---
 
-## Exemplo de Resposta
+## Possíveis Respostas de Erro
+
+### Problema inviável
 
 ```json
 {
-  "message": "Simplex executado com sucesso",
-  "data": {
-    "status": "optimal",
-    "solution": [2, 6],
-    "optimalValue": 36,
-    "hasMultipleSolutions": false,
-    "iterationsCount": 2,
+  "message": "Não foi possível resolver o problema",
+  "status": "infeasible",
+  "error": "O problema não possui solução viável. As restrições são incompatíveis entre si."
+}
+```
 
-    "graphData": {
-      "available": true,
+### Problema ilimitado
 
-      "viewport": {
-        "xMax": 6.6,
-        "yMax": 9.9
-      },
+```json
+{
+  "message": "Não foi possível resolver o problema",
+  "status": "unbounded",
+  "error": "Problema ilimitado: não foi possível encontrar linha pivô"
+}
+```
 
-      "constraints": [
-        {
-          "index": 0,
-          "coefficients": [1, 0],
-          "rhs": 4,
-          "interceptX1": { "x1": 4.0, "x2": 0.0 },
-          "interceptX2": null,
-          "validSide": "origin"
-        },
-        {
-          "index": 1,
-          "coefficients": [0, 2],
-          "rhs": 12,
-          "interceptX1": null,
-          "interceptX2": { "x1": 0.0, "x2": 6.0 },
-          "validSide": "origin"
-        },
-        {
-          "index": 2,
-          "coefficients": [3, 2],
-          "rhs": 18,
-          "interceptX1": { "x1": 6.0, "x2": 0.0 },
-          "interceptX2": { "x1": 0.0, "x2": 9.0 },
-          "validSide": "origin"
-        }
-      ],
+### Operador inválido
 
-      "feasibleRegion": {
-        "vertices": [
-          { "id": "v0", "x1": 0.0, "x2": 0.0 },
-          { "id": "v1", "x1": 4.0, "x2": 0.0 },
-          { "id": "v2", "x1": 4.0, "x2": 3.0 },
-          { "id": "v3", "x1": 2.0, "x2": 6.0 },
-          { "id": "v4", "x1": 0.0, "x2": 6.0 }
-        ],
-        "polygon": ["v0", "v1", "v2", "v3", "v4"]
-      },
-
-      "objectiveFunction": {
-        "coefficients": [3, 5],
-        "type": "max",
-        "levelCurves": [
-          { "z": 0,  "label": "Z = 0"  },
-          { "z": 9,  "label": "Z = 9"  },
-          { "z": 18, "label": "Z = 18" },
-          { "z": 27, "label": "Z = 27" },
-          { "z": 36, "label": "Z = 36" }
-        ]
-      },
-
-      "optimalPoint": {
-        "x1": 2.0,
-        "x2": 6.0,
-        "optimalValue": 36,
-        "vertexId": "v3"
-      }
-    }
-  }
+```json
+{
+  "error": "O campo \"operator\" de cada restrição deve ser \"<=\", \">=\" ou \"=\""
 }
 ```
 
@@ -262,20 +286,19 @@ response.ok({ ...dadosAlgébricos, graphData })
 
 ### Implementado
 
-* Cálculo de interceptos de cada restrição com os eixos coordenados;
-* Enumeração completa dos vértices da região viável;
-* Filtragem de pontos inviáveis e deduplicação numérica;
-* Ordenação dos vértices em sentido anti-horário;
-* Cálculo de curvas de nível da função objetivo;
-* Identificação do vértice correspondente ao ponto ótimo;
-* Cálculo dos limites do viewport com margem;
-* Resposta estruturada para problemas com mais de 2 variáveis.
+* Suporte a restrições `<=`, `>=` e `=`;
+* Introdução de variáveis de folga, excesso e artificiais;
+* Método Big M para penalização de variáveis artificiais;
+* Ajuste canônico da linha objetivo;
+* Normalização automática de restrições com `rhs < 0`;
+* Detecção de inviabilidade pós-resolução;
+* Novo contrato da API com operador por restrição.
 
 ### Em Desenvolvimento
 
-* Suporte a restrições do tipo `>=` e `=` na construção da região viável;
-* Detecção e representação gráfica de regiões ilimitadas;
-* Dados gráficos para o método Branch and Bound.
+* Método das Duas Fases como alternativa ao Big M;
+* Casos avançados de degeneração;
+* Integração dos novos tipos de restrição com o Branch and Bound.
 
 ---
 
@@ -291,15 +314,19 @@ Branch funcional contendo a implementação do Método Simplex utilizada para te
 
 ### integrate-colleague-simplex
 
-Branch experimental destinada à integração de arquitetura mais avançada com suporte futuro a Forma Padrão, Método Big M e restrições `>=` e `=`.
+Branch experimental destinada à integração de arquitetura mais avançada.
 
 ### branch-and-bound
 
-Branch contendo a implementação do método Branch and Bound para resolução de problemas de Programação Linear Inteira.
+Branch contendo a implementação do método Branch and Bound para Programação Linear Inteira.
 
-### solucao-grafica *(novo)*
+### graph-data
 
 Branch contendo a extensão de dados gráficos para visualização da região viável, função objetivo e ponto ótimo.
+
+### big-m *(novo)*
+
+Branch contendo a extensão do Método Simplex com suporte a restrições `>=` e `=` via Método Big M.
 
 ---
 
@@ -313,4 +340,4 @@ https://github.com/SamuelNascimentoFocas/simplex-system-backend
 
 Projeto desenvolvido para a disciplina de Pesquisa Operacional.
 
-Equipe responsável pelo desenvolvimento do sistema Simplex, da extensão Branch and Bound e da extensão de dados gráficos.
+Equipe responsável pelo desenvolvimento do sistema Simplex, da extensão Branch and Bound, da extensão de dados gráficos e da extensão Big M.

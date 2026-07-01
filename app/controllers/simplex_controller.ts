@@ -1,12 +1,15 @@
 import type { HttpContext } from '@adonisjs/core/http'
 import SimplexService from '#services/simplex_service'
+import type { ConstraintInput, ConstraintOperator } from '#services/simplex_service'
 import GraphService from '#services/graph_service'
+
+const VALID_OPERATORS: ConstraintOperator[] = ['<=', '>=', '=']
 
 export default class SimplexController {
   async solve({ request, response }: HttpContext) {
     const data = request.body()
 
-    const { objective, constraints, rhs, type } = data
+    const { objective, constraints, type } = data
 
     if (!Array.isArray(objective) || objective.length === 0) {
       return response.badRequest({
@@ -14,7 +17,7 @@ export default class SimplexController {
       })
     }
 
-    if (!objective.every((value) => typeof value === 'number')) {
+    if (!objective.every((value: unknown) => typeof value === 'number')) {
       return response.badRequest({
         error: 'Todos os coeficientes da função objetivo devem ser números',
       })
@@ -22,46 +25,45 @@ export default class SimplexController {
 
     if (!Array.isArray(constraints) || constraints.length === 0) {
       return response.badRequest({
-        error: 'As restrições devem ser uma matriz com pelo menos uma linha',
+        error: 'As restrições devem ser um array com pelo menos uma restrição',
       })
     }
 
-    if (!constraints.every((row) => Array.isArray(row))) {
+    if (!constraints.every((c: any) => typeof c === 'object' && c !== null)) {
       return response.badRequest({
-        error: 'Cada restrição deve ser um array de coeficientes',
+        error: 'Cada restrição deve ser um objeto com os campos "coefficients", "operator" e "rhs"',
       })
     }
 
-    if (!constraints.every((row) => row.length === objective.length)) {
+    if (
+      !constraints.every(
+        (c: any) => Array.isArray(c.coefficients) && c.coefficients.length === objective.length
+      )
+    ) {
       return response.badRequest({
-        error: 'Cada restrição deve ter a mesma quantidade de coeficientes da função objetivo',
+        error: 'Cada restrição deve ter um campo "coefficients" com a mesma quantidade de coeficientes da função objetivo',
       })
     }
 
-    if (!constraints.every((row) => row.every((value) => typeof value === 'number'))) {
+    if (
+      !constraints.every((c: any) =>
+        c.coefficients.every((value: unknown) => typeof value === 'number')
+      )
+    ) {
       return response.badRequest({
-        error: 'Todos os coeficientes das restrições devem ser números',
+        error: 'Todos os coeficientes de cada restrição devem ser números',
       })
     }
 
-    if (!Array.isArray(rhs) || rhs.length !== constraints.length) {
+    if (!constraints.every((c: any) => VALID_OPERATORS.includes(c.operator))) {
       return response.badRequest({
-        error: 'O vetor rhs deve ter a mesma quantidade de valores que o número de restrições',
+        error: 'O campo "operator" de cada restrição deve ser "<=", ">=" ou "="',
       })
     }
 
-    if (!rhs.every((value) => typeof value === 'number')) {
+    if (!constraints.every((c: any) => typeof c.rhs === 'number' && isFinite(c.rhs))) {
       return response.badRequest({
-        error: 'Todos os valores de rhs devem ser números',
-      })
-    }
-
-    if (rhs.some((value) => value < 0)) {
-      return response.badRequest({
-        message: 'Não foi possível resolver o problema',
-        status: 'unsupported',
-        error:
-          'O método Simplex padrão implementado atualmente exige que todos os valores de rhs sejam maiores ou iguais a zero. Casos com rhs negativo exigem tratamento adicional, como Big M ou método das Duas Fases.',
+        error: 'O campo "rhs" de cada restrição deve ser um número',
       })
     }
 
@@ -73,17 +75,16 @@ export default class SimplexController {
 
     const simplexService = new SimplexService()
 
-    const tableau = simplexService.createInitialTableau({
+    const standardForm = simplexService.createInitialTableauWithMeta({
       objective,
-      constraints,
-      rhs,
+      constraints: constraints as ConstraintInput[],
       type,
     })
 
     let result
 
     try {
-      result = simplexService.solve(tableau)
+      result = simplexService.solve(standardForm.tableau)
     } catch (error) {
       return response.badRequest({
         message: 'Não foi possível resolver o problema',
@@ -92,7 +93,18 @@ export default class SimplexController {
       })
     }
 
-    const extractedResult = simplexService.extractSolution(result.finalTableau, objective.length)
+    if (simplexService.isInfeasible(result.finalTableau, standardForm.artificialVarIndices)) {
+      return response.badRequest({
+        message: 'Não foi possível resolver o problema',
+        status: 'infeasible',
+        error: 'O problema não possui solução viável. As restrições são incompatíveis entre si.',
+      })
+    }
+
+    const extractedResult = simplexService.extractSolution(
+      result.finalTableau,
+      objective.length
+    )
 
     const hasMultipleSolutions = simplexService.hasMultipleOptimalSolutions(
       result.finalTableau,
@@ -100,30 +112,33 @@ export default class SimplexController {
     )
 
     const graphService = new GraphService()
- 
+
+    const graphConstraintCoefficients = (constraints as ConstraintInput[]).map(
+      (c) => c.coefficients
+    )
+    const graphRhs = (constraints as ConstraintInput[]).map((c) => c.rhs)
+
     const graphData = graphService.compute(
       objective,
-      constraints,
-      rhs,
+      graphConstraintCoefficients,
+      graphRhs,
       type,
       extractedResult.solution,
       extractedResult.optimalValue
     )
-
 
     return response.ok({
       message: 'Simplex executado com sucesso',
       data: {
         objective,
         constraints,
-        rhs,
         type,
         status: 'optimal',
         solution: extractedResult.solution,
         optimalValue: extractedResult.optimalValue,
         hasMultipleSolutions,
         iterationsCount: result.iterations.length - 1,
-        initialTableau: tableau,
+        initialTableau: standardForm.tableau,
         finalTableau: result.finalTableau,
         iterations: result.iterations,
         graphData,

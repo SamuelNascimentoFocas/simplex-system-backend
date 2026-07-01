@@ -1,5 +1,6 @@
 import type { HttpContext } from '@adonisjs/core/http'
 import SimplexService from '#services/simplex_service'
+import GraphService from '#services/graph_service'
 
 export default class SimplexController {
   async solve({ request, response }: HttpContext) {
@@ -55,6 +56,15 @@ export default class SimplexController {
       })
     }
 
+    if (rhs.some((value) => value < 0)) {
+      return response.badRequest({
+        message: 'Não foi possível resolver o problema',
+        status: 'unsupported',
+        error:
+          'O método Simplex padrão implementado atualmente exige que todos os valores de rhs sejam maiores ou iguais a zero. Casos com rhs negativo exigem tratamento adicional, como Big M ou método das Duas Fases.',
+      })
+    }
+
     if (type !== 'max' && type !== 'min') {
       return response.badRequest({
         error: 'O tipo do problema deve ser "max" ou "min"',
@@ -70,23 +80,53 @@ export default class SimplexController {
       type,
     })
 
-    const pivotColumn = simplexService.findPivotColumn(tableau)
+    let result
 
-    const pivotRow = simplexService.findPivotRow(tableau, pivotColumn)
+    try {
+      result = simplexService.solve(tableau)
+    } catch (error) {
+      return response.badRequest({
+        message: 'Não foi possível resolver o problema',
+        status: 'unbounded',
+        error: error instanceof Error ? error.message : 'Erro desconhecido',
+      })
+    }
 
-    const nextTableau = simplexService.pivot(tableau, pivotRow, pivotColumn)
+    const extractedResult = simplexService.extractSolution(result.finalTableau, objective.length)
+
+    const hasMultipleSolutions = simplexService.hasMultipleOptimalSolutions(
+      result.finalTableau,
+      objective.length
+    )
+
+    const graphService = new GraphService()
+ 
+    const graphData = graphService.compute(
+      objective,
+      constraints,
+      rhs,
+      type,
+      extractedResult.solution,
+      extractedResult.optimalValue
+    )
+
 
     return response.ok({
-      message: 'Tableau inicial criado com sucesso',
+      message: 'Simplex executado com sucesso',
       data: {
         objective,
         constraints,
         rhs,
         type,
-        tableau,
-        pivotColumn,
-        pivotRow,
-        nextTableau,
+        status: 'optimal',
+        solution: extractedResult.solution,
+        optimalValue: extractedResult.optimalValue,
+        hasMultipleSolutions,
+        iterationsCount: result.iterations.length - 1,
+        initialTableau: tableau,
+        finalTableau: result.finalTableau,
+        iterations: result.iterations,
+        graphData,
       },
     })
   }

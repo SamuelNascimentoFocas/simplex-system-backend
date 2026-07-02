@@ -5,6 +5,9 @@ export interface ApiDefinition {
   simplex: {
     solve: typeof routes['simplex.solve']
   }
+  branchAndBound: {
+    solve: typeof routes['branch_and_bound.solve']
+  }
   auth: {
     newAccount: {
       store: typeof routes['auth.new_account.store']

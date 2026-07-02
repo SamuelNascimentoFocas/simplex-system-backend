@@ -12,6 +12,12 @@ const routes = {
     tokens: [{"old":"/simplex/solve","type":0,"val":"simplex","end":""},{"old":"/simplex/solve","type":0,"val":"solve","end":""}],
     types: placeholder as Registry['simplex.solve']['types'],
   },
+  'branch_and_bound.solve': {
+    methods: ["POST"],
+    pattern: '/simplex/solve-integer',
+    tokens: [{"old":"/simplex/solve-integer","type":0,"val":"simplex","end":""},{"old":"/simplex/solve-integer","type":0,"val":"solve-integer","end":""}],
+    types: placeholder as Registry['branch_and_bound.solve']['types'],
+  },
   'auth.new_account.store': {
     methods: ["POST"],
     pattern: '/api/v1/auth/signup',

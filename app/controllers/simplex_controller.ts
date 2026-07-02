@@ -112,20 +112,15 @@ export default class SimplexController {
     )
 
     const graphService = new GraphService()
-
-    const graphConstraintCoefficients = (constraints as ConstraintInput[]).map(
-      (c) => c.coefficients
-    )
-    const graphRhs = (constraints as ConstraintInput[]).map((c) => c.rhs)
-
+ 
     const graphData = graphService.compute(
       objective,
-      graphConstraintCoefficients,
-      graphRhs,
+      constraints as ConstraintInput[],
       type,
       extractedResult.solution,
       extractedResult.optimalValue
     )
+
 
     return response.ok({
       message: 'Simplex executado com sucesso',

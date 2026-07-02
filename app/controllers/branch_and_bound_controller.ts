@@ -1,15 +1,16 @@
 import type { HttpContext } from '@adonisjs/core/http'
-import SimplexService from '#services/simplex_service'
 import type { ConstraintInput, ConstraintOperator } from '#services/simplex_service'
-import GraphService from '#services/graph_service'
+import { BranchAndBoundSolver } from '#branch_and_bound/index'
 
 const VALID_OPERATORS: ConstraintOperator[] = ['<=', '>=', '=']
 
-export default class SimplexController {
+export default class BranchAndBoundController {
   async solve({ request, response }: HttpContext) {
     const data = request.body()
 
     const { objective, constraints, type } = data
+
+    // ─── Validação: função objetivo ──────────────────────────────────────────
 
     if (!Array.isArray(objective) || objective.length === 0) {
       return response.badRequest({
@@ -22,6 +23,8 @@ export default class SimplexController {
         error: 'Todos os coeficientes da função objetivo devem ser números',
       })
     }
+
+    // ─── Validação: restrições ───────────────────────────────────────────────
 
     if (!Array.isArray(constraints) || constraints.length === 0) {
       return response.badRequest({
@@ -67,77 +70,53 @@ export default class SimplexController {
       })
     }
 
+    // ─── Validação: tipo do problema ─────────────────────────────────────────
+
     if (type !== 'max' && type !== 'min') {
       return response.badRequest({
         error: 'O tipo do problema deve ser "max" ou "min"',
       })
     }
 
-    const simplexService = new SimplexService()
+    // ─── Resolução inteira (Branch and Bound) ────────────────────────────────
 
-    const standardForm = simplexService.createInitialTableauWithMeta({
+    const solver = new BranchAndBoundSolver()
+
+    const result = solver.solve({
       objective,
       constraints: constraints as ConstraintInput[],
       type,
     })
 
-    let result
+    // ─── Resposta: inviável ──────────────────────────────────────────────────
 
-    try {
-      result = simplexService.solve(standardForm.tableau)
-    } catch (error) {
-      return response.badRequest({
-        message: 'Não foi possível resolver o problema',
-        status: 'unbounded',
-        error: error instanceof Error ? error.message : 'Erro desconhecido',
-      })
-    }
-
-    if (simplexService.isInfeasible(result.finalTableau, standardForm.artificialVarIndices)) {
+    if (result.status === 'infeasible') {
       return response.badRequest({
         message: 'Não foi possível resolver o problema',
         status: 'infeasible',
-        error: 'O problema não possui solução viável. As restrições são incompatíveis entre si.',
+        error: 'O problema não possui solução inteira viável.',
+        data: {
+          nodesVisited: result.nodesVisited,
+          nodesPruned: result.nodesPruned,
+          tree: result.tree,
+        },
       })
     }
 
-    const extractedResult = simplexService.extractSolution(
-      result.finalTableau,
-      objective.length,
-      type
-    )
-
-    const hasMultipleSolutions = simplexService.hasMultipleOptimalSolutions(
-      result.finalTableau,
-      objective.length
-    )
-
-    const graphService = new GraphService()
- 
-    const graphData = graphService.compute(
-      objective,
-      constraints as ConstraintInput[],
-      type,
-      extractedResult.solution,
-      extractedResult.optimalValue
-    )
-
+    // ─── Resposta: ótimo ─────────────────────────────────────────────────────
 
     return response.ok({
-      message: 'Simplex executado com sucesso',
+      message: 'Branch and Bound executado com sucesso',
       data: {
         objective,
         constraints,
         type,
-        status: 'optimal',
-        solution: extractedResult.solution,
-        optimalValue: extractedResult.optimalValue,
-        hasMultipleSolutions,
-        iterationsCount: result.iterations.length - 1,
-        initialTableau: standardForm.tableau,
-        finalTableau: result.finalTableau,
-        iterations: result.iterations,
-        graphData,
+        status: result.status,
+        bestSolution: result.bestSolution,
+        bestObjectiveValue: result.bestObjectiveValue,
+        nodesVisited: result.nodesVisited,
+        nodesPruned: result.nodesPruned,
+        tree: result.tree,
       },
     })
   }

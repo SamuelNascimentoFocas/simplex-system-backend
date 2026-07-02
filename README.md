@@ -1,8 +1,8 @@
-# Suporte a Restrições `>=` e `=` via Método Big M
+# Endpoint de Programação Linear Inteira — Integração do Branch and Bound à API
 
 Extensão desenvolvida em TypeScript para o projeto da disciplina de Pesquisa Operacional.
 
-O objetivo desta extensão é evoluir o núcleo matemático da aplicação para suportar restrições do tipo `>=` e `=` além das restrições `<=` já suportadas, utilizando o **Método Big M** para introdução de variáveis artificiais.
+O objetivo desta extensão é expor o módulo de Branch and Bound já implementado através de um endpoint REST, permitindo a resolução de problemas de Programação Linear Inteira via API.
 
 ---
 
@@ -20,255 +20,212 @@ O objetivo desta extensão é evoluir o núcleo matemático da aplicação para 
 
 ### Arquivos modificados
 
-#### `app/services/simplex_service.ts`
+#### `package.json`
 
-As seguintes mudanças foram realizadas:
-
-**Novos tipos exportados**
-
-```typescript
-export type ConstraintOperator = '<=' | '>=' | '='
-
-export type ConstraintInput = {
-  coefficients: number[]
-  operator: ConstraintOperator
-  rhs: number
-}
-
-export type SimplexInput = {
-  objective: number[]
-  constraints: ConstraintInput[]
-  type: 'max' | 'min'
-}
-```
-
-O tipo `ConstraintInput` substitui o uso de `number[][]` para restrições, incorporando o operador e o RHS em cada restrição individualmente. O tipo `SimplexInput` foi atualizado para refletir essa mudança.
-
-**Novo método público: `createInitialTableauWithMeta`**
-
-```typescript
-createInitialTableauWithMeta(input: SimplexInput): StandardForm
-```
-
-Retorna o tableau inicial junto com os metadados da forma padrão, incluindo `artificialVarIndices` e `hasArtificialVars`. O controller utiliza esses dados para verificar inviabilidade após a resolução.
-
-O método `createInitialTableau` foi preservado como fachada pública para compatibilidade com outros consumidores existentes.
-
-**Novo método público: `isInfeasible`**
-
-```typescript
-isInfeasible(finalTableau: number[][], artificialVarIndices: number[]): boolean
-```
-
-Verifica se alguma variável artificial permaneceu na base com valor positivo ao final do Simplex, o que indica que o problema não possui solução viável. Essa verificação é obrigatória com Big M, pois o algoritmo converge mesmo em problemas inviáveis — a penalização apenas encarece, mas não impede a permanência de artificiais na base.
-
-**Novo método privado: `convertToStandardForm`**
-
-Responsável por converter o problema para a forma padrão expandida e montar o tableau inicial com penalização Big M. Implementa as seguintes regras por operador:
-
-| Operador | Variáveis adicionadas |
-| -------- | --------------------- |
-| `<=` | Variável de folga (`+1`) |
-| `>=` | Variável de excesso (`-1`) + variável artificial (`+1`) |
-| `=` | Variável artificial (`+1`) |
-
-Restrições com `rhs < 0` são normalizadas automaticamente: a restrição é multiplicada por `-1` e o operador é invertido antes da alocação das variáveis extras.
-
-**Novo método privado: `adjustObjectiveForArtificials`**
-
-Realiza o ajuste canônico obrigatório após a inserção das penalidades Big M na linha objetivo. Para cada variável artificial na base inicial, subtrai `M` vezes a linha de restrição correspondente da linha objetivo, zerando os coeficientes das artificiais na linha Z e estabelecendo a forma canônica necessária para o critério de parada do Simplex.
-
-**Métodos não alterados**
-
-Os seguintes métodos permaneceram sem nenhuma modificação:
-
-* `findPivotColumn`
-* `findPivotRow`
-* `pivot`
-* `solve`
-* `extractSolution`
-* `hasMultipleOptimalSolutions`
-
----
-
-#### `app/controllers/simplex_controller.ts`
-
-**Novo contrato da API**
-
-O campo `rhs` separado foi removido. O campo `constraints` deixou de ser `number[][]` e passou a ser um array de objetos:
+Adicionado o alias de importação do módulo Branch and Bound:
 
 ```json
 {
-  "coefficients": [1, 2],
-  "operator": "<=",
-  "rhs": 4
+  "imports": {
+    "#controllers/*": "./app/controllers/*.js",
+    "#services/*": "./app/services/*.js",
+    "#branch_and_bound/*": "./app/branch_and_bound/*.js"
+  }
 }
 ```
 
-**Validações adaptadas**
+Sem essa entrada, o TypeScript e o Node.js não conseguem resolver o caminho `#branch_and_bound/index` utilizado pelo novo controller.
 
-* Removida a validação que rejeitava `rhs < 0` — o conversor trata isso internamente;
-* Adicionada validação do campo `operator` contra os valores `"<="`, `">="` e `"="`;
-* Adicionada validação de que `rhs` é um número finito, sem restrição de sinal;
-* As validações de `coefficients` foram adaptadas para a nova estrutura de objeto.
+#### `start/routes.ts`
 
-**Detecção de inviabilidade**
+Adicionada a rota do novo endpoint mantendo a rota original intacta:
 
-Após a resolução, o controller verifica inviabilidade chamando `isInfeasible` com os `artificialVarIndices` retornados por `createInitialTableauWithMeta`. Quando inviável, retorna:
+```typescript
+import router from '@adonisjs/core/services/router'
 
-```json
-{
-  "message": "Não foi possível resolver o problema",
-  "status": "infeasible",
-  "error": "O problema não possui solução viável. As restrições são incompatíveis entre si."
-}
+const SimplexController = () => import('#controllers/simplex_controller')
+const BranchAndBoundController = () => import('#controllers/branch_and_bound_controller')
+
+router.post('/simplex/solve', [SimplexController, 'solve'])
+router.post('/simplex/solve-integer', [BranchAndBoundController, 'solve'])
 ```
-
-**Compatibilidade com `GraphService`**
-
-O `GraphService` foi projetado para receber `coefficients` e `rhs` separados. O controller extrai esses campos das restrições no novo formato antes de chamar o serviço, sem modificar o `GraphService`.
 
 ---
 
-## Novo Contrato da API
+### Arquivo adicionado
 
-### Endpoint
+#### `app/controllers/branch_and_bound_controller.ts`
+
+Controller responsável por receber requisições de resolução inteira, validar os dados de entrada e acionar o `BranchAndBoundSolver`.
+
+Segue o mesmo padrão de validação do `SimplexController`:
+
+* validação da função objetivo;
+* validação das restrições (formato, coeficientes, operador, rhs);
+* validação do tipo do problema.
+
+O contrato de entrada é idêntico ao endpoint `/simplex/solve`, permitindo que o frontend envie o mesmo corpo de requisição para ambos os endpoints.
+
+---
+
+## Estrutura do Projeto Atualizada
+
+```txt
+start/
+└── routes.ts                          ← rota adicionada
+
+app/
+├── controllers/
+│   ├── simplex_controller.ts          ← sem alterações
+│   └── branch_and_bound_controller.ts ← novo
+│
+├── services/
+│   ├── simplex_service.ts             ← sem alterações
+│   └── graph_service.ts               ← sem alterações
+│
+└── branch_and_bound/
+    ├── BranchAndBoundSolver.ts        ← sem alterações
+    ├── BranchNode.ts                  ← sem alterações
+    ├── types.ts                       ← sem alterações
+    └── index.ts                       ← sem alterações
+```
+
+---
+
+## Endpoints Disponíveis
+
+### Resolver problema contínuo (Simplex)
 
 ```http
 POST /simplex/solve
 ```
 
-### Body (JSON)
+### Resolver problema inteiro (Branch and Bound)
 
-```json
-{
-  "objective": [5, 4, 3],
-  "constraints": [
-    { "coefficients": [6, 4, 2], "operator": "<=", "rhs": 240 },
-    { "coefficients": [3, 2, 5], "operator": "<=", "rhs": 270 },
-    { "coefficients": [5, 6, 5], "operator": "<=", "rhs": 420 },
-    { "coefficients": [1, 0, 0], "operator": ">=", "rhs": 10  },
-    { "coefficients": [0, 1, 0], "operator": "=",  "rhs": 15  }
-  ],
-  "type": "max"
-}
+```http
+POST /simplex/solve-integer
 ```
 
-### Campos
+### URL Local
 
-| Campo | Tipo | Descrição |
-| ----- | ---- | --------- |
-| `objective` | `number[]` | Coeficientes da função objetivo |
-| `constraints` | `ConstraintInput[]` | Array de restrições |
-| `constraints[i].coefficients` | `number[]` | Coeficientes da restrição |
-| `constraints[i].operator` | `"<="` \| `">="` \| `"="` | Operador da restrição |
-| `constraints[i].rhs` | `number` | Lado direito da restrição (pode ser negativo) |
-| `type` | `"max"` \| `"min"` | Tipo do problema |
+```txt
+http://localhost:3333/simplex/solve-integer
+```
 
 ---
 
-## Funcionamento do Método Big M
+## Exemplo de Requisição
 
-O Método Big M é uma estratégia para lidar com restrições `>=` e `=`, que não possuem variável de folga para servir como base inicial viável.
+O formato de entrada é idêntico ao endpoint `/simplex/solve`:
 
-### Variáveis artificiais
-
-Para cada restrição `>=` ou `=`, uma variável artificial é introduzida para fornecer uma base inicial viável. Essas variáveis não têm significado econômico e devem sair da base antes da solução ótima.
-
-### Penalização
-
-Cada variável artificial recebe um coeficiente `+M` na função objetivo (onde `M = 10.000.000`), tornando economicamente proibitório que permaneçam na solução ótima:
-
-* Em **maximização**: manter uma artificial reduz Z em M, forçando o Simplex a retirá-la da base;
-* Em **minimização**: manter uma artificial aumenta Z em M, com o mesmo efeito.
-
-### Ajuste canônico
-
-Antes de iniciar o loop de pivotamento, a linha objetivo é ajustada para a forma canônica. Para cada artificial na base inicial, subtrai-se `M` vezes a linha de restrição correspondente da linha objetivo. Sem esse ajuste, o critério de parada do Simplex falharia.
-
-### Detecção de inviabilidade
-
-Após a convergência do Simplex, verifica-se se alguma variável artificial permaneceu na base com valor positivo. Se sim, o problema não possui solução viável e a API retorna `status: "infeasible"`.
+```json
+{
+  "objective": [5, 4],
+  "constraints": [
+    { "coefficients": [6, 4], "operator": "<=", "rhs": 24 },
+    { "coefficients": [1, 2], "operator": "<=", "rhs": 6  }
+  ],
+  "type": "max"
+}
+```
 
 ---
 
-## Exemplos de Requisição
+## Exemplo de Resposta
 
-### Apenas `<=` (comportamento original preservado)
-
-```json
-{
-  "objective": [3, 5],
-  "constraints": [
-    { "coefficients": [1, 0], "operator": "<=", "rhs": 4  },
-    { "coefficients": [0, 2], "operator": "<=", "rhs": 12 },
-    { "coefficients": [3, 2], "operator": "<=", "rhs": 18 }
-  ],
-  "type": "max"
-}
-```
-
-### Com `>=`
+### Solução ótima inteira encontrada
 
 ```json
 {
-  "objective": [2, 3],
-  "constraints": [
-    { "coefficients": [1, 1], "operator": "<=", "rhs": 4 },
-    { "coefficients": [1, 0], "operator": ">=", "rhs": 1 },
-    { "coefficients": [0, 1], "operator": ">=", "rhs": 1 }
-  ],
-  "type": "max"
+  "message": "Branch and Bound executado com sucesso",
+  "data": {
+    "objective": [5, 4],
+    "constraints": [
+      { "coefficients": [6, 4], "operator": "<=", "rhs": 24 },
+      { "coefficients": [1, 2], "operator": "<=", "rhs": 6  }
+    ],
+    "type": "max",
+    "status": "optimal",
+    "bestSolution": [3, 1],
+    "bestObjectiveValue": 19,
+    "nodesVisited": 3,
+    "nodesPruned": 1,
+    "tree": [
+      {
+        "id": "node_1",
+        "level": 0,
+        "parentId": null,
+        "childrenIds": ["node_2", "node_3"],
+        "cuts": [],
+        "status": "fractional",
+        "solution": [3.0, 1.5],
+        "objectiveValue": 21.0
+      },
+      {
+        "id": "node_2",
+        "level": 1,
+        "parentId": "node_1",
+        "childrenIds": [],
+        "cuts": [{ "variableIndex": 1, "bound": 1, "type": "leq" }],
+        "status": "integer",
+        "solution": [3.0, 1.0],
+        "objectiveValue": 19.0
+      },
+      {
+        "id": "node_3",
+        "level": 1,
+        "parentId": "node_1",
+        "childrenIds": [],
+        "cuts": [{ "variableIndex": 1, "bound": 2, "type": "geq" }],
+        "status": "pruned",
+        "solution": [2.0, 2.0],
+        "objectiveValue": 18.0
+      }
+    ]
+  }
 }
 ```
 
-### Com `=`
+### Campos retornados
 
-```json
-{
-  "objective": [3, 5],
-  "constraints": [
-    { "coefficients": [1, 1], "operator": "<=", "rhs": 10 },
-    { "coefficients": [1, 0], "operator": "=",  "rhs": 4  }
-  ],
-  "type": "max"
-}
-```
+| Campo | Descrição |
+| ----- | --------- |
+| `status` | Situação da resolução (`optimal` ou `infeasible`) |
+| `bestSolution` | Valores inteiros encontrados para as variáveis de decisão |
+| `bestObjectiveValue` | Valor ótimo inteiro da função objetivo |
+| `nodesVisited` | Total de nós processados na árvore de busca |
+| `nodesPruned` | Total de nós podados |
+| `tree` | Árvore de busca completa com todos os nós e seus estados |
 
-### Problema inviável
+### Campos de cada nó em `tree`
 
-```json
-{
-  "objective": [1, 1],
-  "constraints": [
-    { "coefficients": [1, 1], "operator": "<=", "rhs": 5 },
-    { "coefficients": [1, 1], "operator": ">=", "rhs": 8 }
-  ],
-  "type": "max"
-}
-```
+| Campo | Descrição |
+| ----- | --------- |
+| `id` | Identificador único do nó |
+| `level` | Profundidade na árvore de busca |
+| `parentId` | Identificador do nó pai (`null` para a raiz) |
+| `childrenIds` | Identificadores dos nós filhos |
+| `cuts` | Cortes de branching acumulados desde a raiz |
+| `status` | Estado do nó (`fractional`, `integer`, `infeasible`, `pruned`, `unbounded`) |
+| `solution` | Solução da relaxação linear neste nó |
+| `objectiveValue` | Valor objetivo da relaxação linear neste nó |
 
 ---
 
 ## Possíveis Respostas de Erro
 
-### Problema inviável
+### Problema sem solução inteira viável
 
 ```json
 {
   "message": "Não foi possível resolver o problema",
   "status": "infeasible",
-  "error": "O problema não possui solução viável. As restrições são incompatíveis entre si."
-}
-```
-
-### Problema ilimitado
-
-```json
-{
-  "message": "Não foi possível resolver o problema",
-  "status": "unbounded",
-  "error": "Problema ilimitado: não foi possível encontrar linha pivô"
+  "error": "O problema não possui solução inteira viável.",
+  "data": {
+    "nodesVisited": 4,
+    "nodesPruned": 4,
+    "tree": [...]
+  }
 }
 ```
 
@@ -282,23 +239,34 @@ Após a convergência do Simplex, verifica-se se alguma variável artificial per
 
 ---
 
+## Diferença entre os endpoints
+
+| | `/simplex/solve` | `/simplex/solve-integer` |
+| --- | --- | --- |
+| Método de resolução | Simplex tabular | Branch and Bound |
+| Tipo de solução | Contínua | Inteira |
+| Campo de solução | `solution` | `bestSolution` |
+| Campo de valor ótimo | `optimalValue` | `bestObjectiveValue` |
+| Retorna tableau | Sim | Não |
+| Retorna árvore de busca | Não | Sim |
+| Retorna dados gráficos | Sim (2 variáveis) | Não |
+
+---
+
 ## Estado Atual do Desenvolvimento
 
 ### Implementado
 
-* Suporte a restrições `<=`, `>=` e `=`;
-* Introdução de variáveis de folga, excesso e artificiais;
-* Método Big M para penalização de variáveis artificiais;
-* Ajuste canônico da linha objetivo;
-* Normalização automática de restrições com `rhs < 0`;
-* Detecção de inviabilidade pós-resolução;
-* Novo contrato da API com operador por restrição.
+* Endpoint `POST /simplex/solve-integer`;
+* Controller com validações completas;
+* Integração com o `BranchAndBoundSolver` existente;
+* Retorno da árvore de busca completa;
+* Tratamento de resposta para problema inviável.
 
 ### Em Desenvolvimento
 
-* Método das Duas Fases como alternativa ao Big M;
-* Casos avançados de degeneração;
-* Integração dos novos tipos de restrição com o Branch and Bound.
+* Dados gráficos para a solução inteira;
+* Suporte a MILP (variáveis mistas inteiras e contínuas).
 
 ---
 
@@ -324,9 +292,13 @@ Branch contendo a implementação do método Branch and Bound para Programação
 
 Branch contendo a extensão de dados gráficos para visualização da região viável, função objetivo e ponto ótimo.
 
-### big-m *(novo)*
+### big-m
 
 Branch contendo a extensão do Método Simplex com suporte a restrições `>=` e `=` via Método Big M.
+
+### integer-endpoint *(novo)*
+
+Branch contendo a exposição do Branch and Bound via endpoint REST e o alias de importação do módulo.
 
 ---
 
@@ -340,4 +312,4 @@ https://github.com/SamuelNascimentoFocas/simplex-system-backend
 
 Projeto desenvolvido para a disciplina de Pesquisa Operacional.
 
-Equipe responsável pelo desenvolvimento do sistema Simplex, da extensão Branch and Bound, da extensão de dados gráficos e da extensão Big M.
+Equipe responsável pelo desenvolvimento do sistema Simplex, da extensão Branch and Bound, da extensão de dados gráficos, da extensão Big M e do endpoint de resolução inteira.

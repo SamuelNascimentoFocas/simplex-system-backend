@@ -1,3 +1,7 @@
+import type { ConstraintInput, ConstraintOperator } from '#services/simplex_service'
+
+// ─── Tipos ────────────────────────────────────────────────────────────────────
+
 type ProblemType = 'max' | 'min'
 
 interface Point {
@@ -6,15 +10,22 @@ interface Point {
 }
 
 interface Intercepts {
-  interceptX1: Point | null
-  interceptX2: Point | null
+  interceptX1: Point | null  // ponto onde a reta cruza o eixo x2 = 0
+  interceptX2: Point | null  // ponto onde a reta cruza o eixo x1 = 0
 }
+
+// validSide indica ao frontend qual lado da reta sombrear:
+//   'origin'   → o semiplano que contém a origem (restrições <=  com rhs >= 0)
+//   'opposite' → o semiplano oposto à origem     (restrições >= com rhs >  0)
+//   'line'     → não há semiplano; a restrição define uma reta (restrições =)
+type ValidSide = 'origin' | 'opposite' | 'line'
 
 interface ConstraintGraphData extends Intercepts {
   index: number
   coefficients: [number, number]
+  operator: ConstraintOperator
   rhs: number
-  validSide: 'origin'
+  validSide: ValidSide
 }
 
 interface Vertex extends Point {
@@ -65,15 +76,24 @@ export interface GraphDataUnavailable {
 
 export type GraphData = GraphDataAvailable | GraphDataUnavailable
 
+// ─── Constantes ───────────────────────────────────────────────────────────────
+
 const EPSILON = 1e-9
 const VIEWPORT_MARGIN = 1.1
 const LEVEL_CURVE_COUNT = 5
 
+// ─── Serviço ──────────────────────────────────────────────────────────────────
+
 export default class GraphService {
+  /**
+   * Ponto de entrada principal.
+   *
+   * Recebe ConstraintInput[] com operator por restrição, necessário para
+   * calcular corretamente a região viável e o semiplano válido de cada reta.
+   */
   compute(
     objective: number[],
-    constraints: number[][],
-    rhs: number[],
+    constraints: ConstraintInput[],
     type: ProblemType,
     solution: number[],
     optimalValue: number
@@ -85,15 +105,9 @@ export default class GraphService {
       }
     }
 
-    const constraintData = this.computeConstraints(
-      constraints as [number, number][],
-      rhs
-    )
+    const constraintData = this.computeConstraints(constraints)
 
-    const feasibleRegion = this.computeFeasibleRegion(
-      constraints as [number, number][],
-      rhs
-    )
+    const feasibleRegion = this.computeFeasibleRegion(constraints)
 
     const optimalPoint = this.findOptimalVertex(
       feasibleRegion.vertices,
@@ -119,56 +133,93 @@ export default class GraphService {
     }
   }
 
-  private computeConstraints(
-    constraints: [number, number][],
-    rhs: number[]
-  ): ConstraintGraphData[] {
-    return constraints.map((row, index) => {
-      const [a1, a2] = row
-      const b = rhs[index]
+  // ─── Restrições ─────────────────────────────────────────────────────────────
+
+  /**
+   * Calcula os interceptos e o semiplano válido de cada restrição.
+   *
+   * validSide é determinado pelo operador:
+   *   <=  →  'origin'   (semiplano que contém a origem, pois 0 <= rhs quando rhs >= 0)
+   *   >=  →  'opposite' (semiplano oposto à origem, pois 0 >= rhs só quando rhs <= 0)
+   *   =   →  'line'     (não há semiplano — é uma igualdade)
+   *
+   * Caso especial: se rhs < 0 em uma restrição <=, a origem não satisfaz a
+   * restrição e validSide seria 'opposite'. O SimplexService normaliza rhs < 0
+   * internamente, mas o GraphService recebe os valores originais — portanto
+   * é necessário verificar o sinal do rhs para <= também.
+   */
+  private computeConstraints(constraints: ConstraintInput[]): ConstraintGraphData[] {
+    return constraints.map((constraint, index) => {
+      const [a1, a2] = constraint.coefficients as [number, number]
+      const { operator, rhs } = constraint
 
       const interceptX1: Point | null =
-        Math.abs(a1) > EPSILON ? { x1: b / a1, x2: 0 } : null
+        Math.abs(a1) > EPSILON ? { x1: rhs / a1, x2: 0 } : null
 
       const interceptX2: Point | null =
-        Math.abs(a2) > EPSILON ? { x1: 0, x2: b / a2 } : null
+        Math.abs(a2) > EPSILON ? { x1: 0, x2: rhs / a2 } : null
+
+      const validSide = this.computeValidSide(operator, rhs)
 
       return {
         index,
         coefficients: [a1, a2],
-        rhs: b,
+        operator,
+        rhs,
         interceptX1,
         interceptX2,
-        validSide: 'origin' as const,
+        validSide,
       }
     })
   }
 
-  private computeFeasibleRegion(
-    constraints: [number, number][],
-    rhs: number[]
-  ): FeasibleRegion {
-    const augmentedConstraints: [number, number][] = [
+  /**
+   * Determina o semiplano válido de uma restrição em relação à origem.
+   *
+   * A origem satisfaz a*0 + b*0 = 0. Portanto:
+   *   <=: origem satisfaz se 0 <= rhs, ou seja, rhs >= 0 → 'origin'; senão → 'opposite'
+   *   >=: origem satisfaz se 0 >= rhs, ou seja, rhs <= 0 → 'origin'; senão → 'opposite'
+   *   = : não há semiplano → 'line'
+   */
+  private computeValidSide(operator: ConstraintOperator, rhs: number): ValidSide {
+    if (operator === '=') return 'line'
+    if (operator === '<=') return rhs >= -EPSILON ? 'origin' : 'opposite'
+    // operator === '>='
+    return rhs <= EPSILON ? 'origin' : 'opposite'
+  }
+
+  // ─── Região viável ──────────────────────────────────────────────────────────
+
+  /**
+   * Calcula todos os vértices da região viável por enumeração de pares
+   * de restrições, incluindo as restrições implícitas de não-negatividade.
+   *
+   * As restrições de não-negatividade (x1 >= 0, x2 >= 0) são representadas
+   * como restrições >= com coeficiente unitário, para que isFeasible as trate
+   * corretamente junto com as demais.
+   */
+  private computeFeasibleRegion(constraints: ConstraintInput[]): FeasibleRegion {
+    // Adiciona restrições implícitas de não-negatividade como ConstraintInput
+    const augmented: ConstraintInput[] = [
       ...constraints,
-      [-1, 0],
-      [0, -1],
+      { coefficients: [1, 0], operator: '>=', rhs: 0 },
+      { coefficients: [0, 1], operator: '>=', rhs: 0 },
     ]
-    const augmentedRhs: number[] = [...rhs, 0, 0]
 
     const candidates: Point[] = []
-    const n = augmentedConstraints.length
+    const n = augmented.length
 
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
         const point = this.solveSystem(
-          augmentedConstraints[i],
-          augmentedRhs[i],
-          augmentedConstraints[j],
-          augmentedRhs[j]
+          augmented[i].coefficients as [number, number],
+          augmented[i].rhs,
+          augmented[j].coefficients as [number, number],
+          augmented[j].rhs
         )
 
         if (point === null) continue
-        if (!this.isFeasible(point, augmentedConstraints, augmentedRhs)) continue
+        if (!this.isFeasible(point, augmented)) continue
 
         candidates.push(point)
       }
@@ -188,6 +239,13 @@ export default class GraphService {
     return { vertices, polygon }
   }
 
+  /**
+   * Resolve o sistema linear 2x2:
+   *   a1*x1 + a2*x2 = b1
+   *   c1*x1 + c2*x2 = b2
+   *
+   * Retorna null se o sistema for singular (retas paralelas ou coincidentes).
+   */
   private solveSystem(
     row1: [number, number],
     b1: number,
@@ -207,17 +265,29 @@ export default class GraphService {
     return { x1, x2 }
   }
 
-  private isFeasible(
-    point: Point,
-    constraints: [number, number][],
-    rhs: number[]
-  ): boolean {
-    return constraints.every((row, index) => {
-      const lhs = row[0] * point.x1 + row[1] * point.x2
-      return lhs <= rhs[index] + EPSILON
+  /**
+   * Verifica se um ponto satisfaz todas as restrições do sistema,
+   * respeitando o operador de cada uma.
+   *
+   * Antes desta correção, todas as restrições eram testadas como <=,
+   * o que eliminava incorretamente vértices válidos para >= e =.
+   */
+  private isFeasible(point: Point, constraints: ConstraintInput[]): boolean {
+    return constraints.every((constraint) => {
+      const [a1, a2] = constraint.coefficients
+      const lhs = a1 * point.x1 + a2 * point.x2
+      const { operator, rhs } = constraint
+
+      if (operator === '<=') return lhs <= rhs + EPSILON
+      if (operator === '>=') return lhs >= rhs - EPSILON
+      // operator === '='
+      return Math.abs(lhs - rhs) <= EPSILON
     })
   }
 
+  /**
+   * Remove pontos numericamente duplicados (distância euclidiana < EPSILON).
+   */
   private deduplicatePoints(points: Point[]): Point[] {
     const unique: Point[] = []
 
@@ -233,6 +303,10 @@ export default class GraphService {
     return unique
   }
 
+  /**
+   * Ordena os pontos em sentido anti-horário em torno do centroide.
+   * Necessário para que o frontend possa traçar o polígono sem cruzamentos.
+   */
   private sortCounterClockwise(points: Point[]): Point[] {
     if (points.length === 0) return []
 
@@ -246,6 +320,13 @@ export default class GraphService {
     })
   }
 
+  // ─── Função objetivo ────────────────────────────────────────────────────────
+
+  /**
+   * Gera LEVEL_CURVE_COUNT valores de Z igualmente espaçados entre 0 e Z*
+   * para que o frontend trace retas paralelas mostrando a progressão da
+   * função objetivo.
+   */
   private computeObjectiveFunction(
     objective: [number, number],
     type: ProblemType,
@@ -265,6 +346,12 @@ export default class GraphService {
     }
   }
 
+  // ─── Ponto ótimo ────────────────────────────────────────────────────────────
+
+  /**
+   * Identifica qual vértice da região viável corresponde ao ponto ótimo
+   * usando distância euclidiana mínima para tolerância numérica.
+   */
   private findOptimalVertex(
     vertices: Vertex[],
     solution: number[],
@@ -293,6 +380,11 @@ export default class GraphService {
     }
   }
 
+  // ─── Viewport ───────────────────────────────────────────────────────────────
+
+  /**
+   * Calcula os limites sugeridos para o canvas do frontend com margem de 10%.
+   */
   private computeViewport(
     constraintData: ConstraintGraphData[],
     vertices: Vertex[]
@@ -318,6 +410,8 @@ export default class GraphService {
       yMax: this.round(maxX2 * VIEWPORT_MARGIN),
     }
   }
+
+  // ─── Utilitários ────────────────────────────────────────────────────────────
 
   private round(value: number): number {
     return Math.round(value * 1e6) / 1e6

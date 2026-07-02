@@ -1,9 +1,10 @@
+import type { ConstraintInput } from '#services/simplex_service'
+
 export type ProblemType = 'max' | 'min'
 
 export interface BranchAndBoundInput {
   objective: number[]
-  constraints: number[][]
-  rhs: number[]
+  constraints: ConstraintInput[]
   type: ProblemType
 }
 
@@ -28,7 +29,7 @@ export interface BranchNode {
   level: number
   parentId: string | null
   childrenIds: string[]
-  cuts: BranchCut[]          // cortes herdados + o corte deste nó
+  cuts: BranchCut[]
   status: NodeStatus
   solution: number[] | null
   objectiveValue: number | null

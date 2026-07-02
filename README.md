@@ -1,10 +1,8 @@
-# Dados Gráficos — Extensão do Simplex System Backend
+# Endpoint de Programação Linear Inteira — Integração do Branch and Bound à API
 
 Extensão desenvolvida em TypeScript para o projeto da disciplina de Pesquisa Operacional.
 
-O objetivo desta extensão é enriquecer a resposta da API com dados matemáticos estruturados que permitam ao frontend construir a visualização gráfica do problema de Programação Linear resolvido pelo Método Simplex.
-
-O backend não gera imagens nem gráficos. Sua responsabilidade é exclusivamente calcular e fornecer os dados necessários para que o frontend realize a renderização.
+O objetivo desta extensão é expor o módulo de Branch and Bound já implementado através de um endpoint REST, permitindo a resolução de problemas de Programação Linear Inteira via API.
 
 ---
 
@@ -22,153 +20,111 @@ O backend não gera imagens nem gráficos. Sua responsabilidade é exclusivament
 
 ### Arquivos modificados
 
-#### `app/services/simplex_service.ts`
+#### `package.json`
 
-Adicionada a exportação do tipo `SimplexResult` ao final do arquivo:
+Adicionado o alias de importação do módulo Branch and Bound:
 
-```typescript
-export type SimplexResult = ReturnType<SimplexService['solve']>
+```json
+{
+  "imports": {
+    "#controllers/*": "./app/controllers/*.js",
+    "#services/*": "./app/services/*.js",
+    "#branch_and_bound/*": "./app/branch_and_bound/*.js"
+  }
+}
 ```
 
-Nenhuma lógica foi alterada.
+Sem essa entrada, o TypeScript e o Node.js não conseguem resolver o caminho `#branch_and_bound/index` utilizado pelo novo controller.
 
-#### `app/controllers/simplex_controller.ts`
+#### `start/routes.ts`
 
-Adicionadas as seguintes mudanças:
+Adicionada a rota do novo endpoint mantendo a rota original intacta:
 
-* Importação do novo `GraphService`;
-* Chamada ao `GraphService` após a resolução algébrica;
-* Inclusão do campo `graphData` no objeto de resposta.
+```typescript
+import router from '@adonisjs/core/services/router'
 
-Nenhuma validação existente foi modificada. A lógica de resolução algébrica permanece intacta.
+const SimplexController = () => import('#controllers/simplex_controller')
+const BranchAndBoundController = () => import('#controllers/branch_and_bound_controller')
+
+router.post('/simplex/solve', [SimplexController, 'solve'])
+router.post('/simplex/solve-integer', [BranchAndBoundController, 'solve'])
+```
 
 ---
 
 ### Arquivo adicionado
 
-#### `app/services/graph_service.ts`
+#### `app/controllers/branch_and_bound_controller.ts`
 
-Novo serviço responsável por todos os cálculos matemáticos necessários para a visualização gráfica. Não possui dependência do AdonisJS nem do `SimplexService`.
+Controller responsável por receber requisições de resolução inteira, validar os dados de entrada e acionar o `BranchAndBoundSolver`.
+
+Segue o mesmo padrão de validação do `SimplexController`:
+
+* validação da função objetivo;
+* validação das restrições (formato, coeficientes, operador, rhs);
+* validação do tipo do problema.
+
+O contrato de entrada é idêntico ao endpoint `/simplex/solve`, permitindo que o frontend envie o mesmo corpo de requisição para ambos os endpoints.
 
 ---
 
 ## Estrutura do Projeto Atualizada
 
 ```txt
-start/routes.ts
-        ↓
-app/controllers/simplex_controller.ts
-        ↓                    ↓
-app/services/         app/services/
-simplex_service.ts    graph_service.ts
+start/
+└── routes.ts                          ← rota adicionada
+
+app/
+├── controllers/
+│   ├── simplex_controller.ts          ← sem alterações
+│   └── branch_and_bound_controller.ts ← novo
+│
+├── services/
+│   ├── simplex_service.ts             ← sem alterações
+│   └── graph_service.ts               ← sem alterações
+│
+└── branch_and_bound/
+    ├── BranchAndBoundSolver.ts        ← sem alterações
+    ├── BranchNode.ts                  ← sem alterações
+    ├── types.ts                       ← sem alterações
+    └── index.ts                       ← sem alterações
 ```
 
 ---
 
-## Responsabilidades do Novo Arquivo
+## Endpoints Disponíveis
 
-#### `graph_service.ts`
+### Resolver problema contínuo (Simplex)
 
-Responsável por:
-
-* Verificar se o problema possui exatamente 2 variáveis de decisão;
-* Calcular os interceptos de cada restrição com os eixos coordenados;
-* Enumerar todos os vértices da região viável por interseção de pares de restrições;
-* Filtrar pontos inviáveis e deduplicar pontos numericamente próximos;
-* Ordenar os vértices em sentido anti-horário para fechamento do polígono;
-* Calcular as curvas de nível da função objetivo;
-* Identificar o vértice correspondente ao ponto ótimo;
-* Calcular os limites sugeridos para o canvas do frontend.
-
----
-
-## Limitação do Método Gráfico
-
-O método gráfico está disponível apenas para problemas com exatamente **2 variáveis de decisão**.
-
-Quando o problema possuir outro número de variáveis, a resolução algébrica ocorre normalmente e o campo `graphData` retorna:
-
-```json
-{
-  "available": false,
-  "unavailableReason": "O método gráfico está disponível apenas para problemas com 2 variáveis de decisão. Este problema possui 3 variáveis."
-}
+```http
+POST /simplex/solve
 ```
 
----
+### Resolver problema inteiro (Branch and Bound)
 
-## Separação de Responsabilidades
+```http
+POST /simplex/solve-integer
+```
 
-| Responsabilidade | Onde fica |
-| ---------------- | --------- |
-| Resolver o problema (Simplex) | `SimplexService` — sem alterações |
-| Calcular dados matemáticos para o gráfico | `GraphService` — novo serviço |
-| Orquestrar chamadas e montar resposta | `SimplexController` — adaptação mínima |
-| Renderizar o gráfico | Frontend |
-| Determinar escala visual, cores e animações | Frontend |
-
----
-
-## Fluxo Completo de Execução
+### URL Local
 
 ```txt
-POST /simplex/solve
-        ↓
-SimplexController valida body
-        ↓
-SimplexService.createInitialTableau(...)
-        ↓
-SimplexService.solve(tableau)
-        ↓
-SimplexService.extractSolution(...)
-SimplexService.hasMultipleOptimalSolutions(...)
-        ↓
-GraphService.compute(...)
-  ├── Verifica número de variáveis
-  ├── Calcula interceptos das restrições
-  ├── Enumera e filtra vértices da região viável
-  ├── Ordena vértices (sentido anti-horário)
-  ├── Calcula curvas de nível
-  ├── Identifica vértice ótimo
-  └── Calcula viewport
-        ↓
-response.ok({ ...dadosAlgébricos, graphData })
+http://localhost:3333/simplex/solve-integer
 ```
-
----
-
-## Dados Retornados em `graphData`
-
-### Quando disponível (`available: true`)
-
-| Campo | Descrição |
-| ----- | --------- |
-| `viewport.xMax` | Limite sugerido do eixo x para o canvas do frontend |
-| `viewport.yMax` | Limite sugerido do eixo y para o canvas do frontend |
-| `constraints[i].interceptX1` | Ponto onde a reta da restrição cruza o eixo x2 = 0 |
-| `constraints[i].interceptX2` | Ponto onde a reta da restrição cruza o eixo x1 = 0 |
-| `constraints[i].validSide` | Indica que o semiplano válido contém a origem |
-| `feasibleRegion.vertices` | Lista de vértices do polígono convexo com coordenadas |
-| `feasibleRegion.polygon` | Sequência de IDs dos vértices em sentido anti-horário |
-| `objectiveFunction.levelCurves` | Valores de Z pré-calculados para retas paralelas |
-| `optimalPoint.x1` | Coordenada x1 do ponto ótimo |
-| `optimalPoint.x2` | Coordenada x2 do ponto ótimo |
-| `optimalPoint.optimalValue` | Valor ótimo da função objetivo |
-| `optimalPoint.vertexId` | Referência ao vértice da região viável correspondente ao ótimo |
 
 ---
 
 ## Exemplo de Requisição
 
+O formato de entrada é idêntico ao endpoint `/simplex/solve`:
+
 ```json
 {
-  "objective": [3, 5],
+  "objective": [5, 4],
   "constraints": [
-    [1, 0],
-    [0, 2],
-    [3, 2]
+    { "coefficients": [6, 4], "operator": "<=", "rhs": 24 },
+    { "coefficients": [1, 2], "operator": "<=", "rhs": 6  }
   ],
-  "rhs": [4, 12, 18],
   "type": "max"
 }
 ```
@@ -177,84 +133,123 @@ response.ok({ ...dadosAlgébricos, graphData })
 
 ## Exemplo de Resposta
 
+### Solução ótima inteira encontrada
+
 ```json
 {
-  "message": "Simplex executado com sucesso",
+  "message": "Branch and Bound executado com sucesso",
   "data": {
+    "objective": [5, 4],
+    "constraints": [
+      { "coefficients": [6, 4], "operator": "<=", "rhs": 24 },
+      { "coefficients": [1, 2], "operator": "<=", "rhs": 6  }
+    ],
+    "type": "max",
     "status": "optimal",
-    "solution": [2, 6],
-    "optimalValue": 36,
-    "hasMultipleSolutions": false,
-    "iterationsCount": 2,
-
-    "graphData": {
-      "available": true,
-
-      "viewport": {
-        "xMax": 6.6,
-        "yMax": 9.9
+    "bestSolution": [3, 1],
+    "bestObjectiveValue": 19,
+    "nodesVisited": 3,
+    "nodesPruned": 1,
+    "tree": [
+      {
+        "id": "node_1",
+        "level": 0,
+        "parentId": null,
+        "childrenIds": ["node_2", "node_3"],
+        "cuts": [],
+        "status": "fractional",
+        "solution": [3.0, 1.5],
+        "objectiveValue": 21.0
       },
-
-      "constraints": [
-        {
-          "index": 0,
-          "coefficients": [1, 0],
-          "rhs": 4,
-          "interceptX1": { "x1": 4.0, "x2": 0.0 },
-          "interceptX2": null,
-          "validSide": "origin"
-        },
-        {
-          "index": 1,
-          "coefficients": [0, 2],
-          "rhs": 12,
-          "interceptX1": null,
-          "interceptX2": { "x1": 0.0, "x2": 6.0 },
-          "validSide": "origin"
-        },
-        {
-          "index": 2,
-          "coefficients": [3, 2],
-          "rhs": 18,
-          "interceptX1": { "x1": 6.0, "x2": 0.0 },
-          "interceptX2": { "x1": 0.0, "x2": 9.0 },
-          "validSide": "origin"
-        }
-      ],
-
-      "feasibleRegion": {
-        "vertices": [
-          { "id": "v0", "x1": 0.0, "x2": 0.0 },
-          { "id": "v1", "x1": 4.0, "x2": 0.0 },
-          { "id": "v2", "x1": 4.0, "x2": 3.0 },
-          { "id": "v3", "x1": 2.0, "x2": 6.0 },
-          { "id": "v4", "x1": 0.0, "x2": 6.0 }
-        ],
-        "polygon": ["v0", "v1", "v2", "v3", "v4"]
+      {
+        "id": "node_2",
+        "level": 1,
+        "parentId": "node_1",
+        "childrenIds": [],
+        "cuts": [{ "variableIndex": 1, "bound": 1, "type": "leq" }],
+        "status": "integer",
+        "solution": [3.0, 1.0],
+        "objectiveValue": 19.0
       },
-
-      "objectiveFunction": {
-        "coefficients": [3, 5],
-        "type": "max",
-        "levelCurves": [
-          { "z": 0,  "label": "Z = 0"  },
-          { "z": 9,  "label": "Z = 9"  },
-          { "z": 18, "label": "Z = 18" },
-          { "z": 27, "label": "Z = 27" },
-          { "z": 36, "label": "Z = 36" }
-        ]
-      },
-
-      "optimalPoint": {
-        "x1": 2.0,
-        "x2": 6.0,
-        "optimalValue": 36,
-        "vertexId": "v3"
+      {
+        "id": "node_3",
+        "level": 1,
+        "parentId": "node_1",
+        "childrenIds": [],
+        "cuts": [{ "variableIndex": 1, "bound": 2, "type": "geq" }],
+        "status": "pruned",
+        "solution": [2.0, 2.0],
+        "objectiveValue": 18.0
       }
-    }
+    ]
   }
 }
 ```
+
+### Campos retornados
+
+| Campo | Descrição |
+| ----- | --------- |
+| `status` | Situação da resolução (`optimal` ou `infeasible`) |
+| `bestSolution` | Valores inteiros encontrados para as variáveis de decisão |
+| `bestObjectiveValue` | Valor ótimo inteiro da função objetivo |
+| `nodesVisited` | Total de nós processados na árvore de busca |
+| `nodesPruned` | Total de nós podados |
+| `tree` | Árvore de busca completa com todos os nós e seus estados |
+
+### Campos de cada nó em `tree`
+
+| Campo | Descrição |
+| ----- | --------- |
+| `id` | Identificador único do nó |
+| `level` | Profundidade na árvore de busca |
+| `parentId` | Identificador do nó pai (`null` para a raiz) |
+| `childrenIds` | Identificadores dos nós filhos |
+| `cuts` | Cortes de branching acumulados desde a raiz |
+| `status` | Estado do nó (`fractional`, `integer`, `infeasible`, `pruned`, `unbounded`) |
+| `solution` | Solução da relaxação linear neste nó |
+| `objectiveValue` | Valor objetivo da relaxação linear neste nó |
+
+---
+
+## Possíveis Respostas de Erro
+
+### Problema sem solução inteira viável
+
+```json
+{
+  "message": "Não foi possível resolver o problema",
+  "status": "infeasible",
+  "error": "O problema não possui solução inteira viável.",
+  "data": {
+    "nodesVisited": 4,
+    "nodesPruned": 4,
+    "tree": [...]
+  }
+}
+```
+
+### Operador inválido
+
+```json
+{
+  "error": "O campo \"operator\" de cada restrição deve ser \"<=\", \">=\" ou \"=\""
+}
+```
+
+---
+
+## Diferença entre os endpoints
+
+| | `/simplex/solve` | `/simplex/solve-integer` |
+| --- | --- | --- |
+| Método de resolução | Simplex tabular | Branch and Bound |
+| Tipo de solução | Contínua | Inteira |
+| Campo de solução | `solution` | `bestSolution` |
+| Campo de valor ótimo | `optimalValue` | `bestObjectiveValue` |
+| Retorna tableau | Sim | Não |
+| Retorna árvore de busca | Não | Sim |
+| Retorna dados gráficos | Sim (2 variáveis) | Não |
 
 ---
 
@@ -262,20 +257,16 @@ response.ok({ ...dadosAlgébricos, graphData })
 
 ### Implementado
 
-* Cálculo de interceptos de cada restrição com os eixos coordenados;
-* Enumeração completa dos vértices da região viável;
-* Filtragem de pontos inviáveis e deduplicação numérica;
-* Ordenação dos vértices em sentido anti-horário;
-* Cálculo de curvas de nível da função objetivo;
-* Identificação do vértice correspondente ao ponto ótimo;
-* Cálculo dos limites do viewport com margem;
-* Resposta estruturada para problemas com mais de 2 variáveis.
+* Endpoint `POST /simplex/solve-integer`;
+* Controller com validações completas;
+* Integração com o `BranchAndBoundSolver` existente;
+* Retorno da árvore de busca completa;
+* Tratamento de resposta para problema inviável.
 
 ### Em Desenvolvimento
 
-* Suporte a restrições do tipo `>=` e `=` na construção da região viável;
-* Detecção e representação gráfica de regiões ilimitadas;
-* Dados gráficos para o método Branch and Bound.
+* Dados gráficos para a solução inteira;
+* Suporte a MILP (variáveis mistas inteiras e contínuas).
 
 ---
 
@@ -291,15 +282,23 @@ Branch funcional contendo a implementação do Método Simplex utilizada para te
 
 ### integrate-colleague-simplex
 
-Branch experimental destinada à integração de arquitetura mais avançada com suporte futuro a Forma Padrão, Método Big M e restrições `>=` e `=`.
+Branch experimental destinada à integração de arquitetura mais avançada.
 
 ### branch-and-bound
 
-Branch contendo a implementação do método Branch and Bound para resolução de problemas de Programação Linear Inteira.
+Branch contendo a implementação do método Branch and Bound para Programação Linear Inteira.
 
-### solucao-grafica *(novo)*
+### graph-data
 
 Branch contendo a extensão de dados gráficos para visualização da região viável, função objetivo e ponto ótimo.
+
+### big-m
+
+Branch contendo a extensão do Método Simplex com suporte a restrições `>=` e `=` via Método Big M.
+
+### integer-endpoint *(novo)*
+
+Branch contendo a exposição do Branch and Bound via endpoint REST e o alias de importação do módulo.
 
 ---
 
@@ -313,4 +312,4 @@ https://github.com/SamuelNascimentoFocas/simplex-system-backend
 
 Projeto desenvolvido para a disciplina de Pesquisa Operacional.
 
-Equipe responsável pelo desenvolvimento do sistema Simplex, da extensão Branch and Bound e da extensão de dados gráficos.
+Equipe responsável pelo desenvolvimento do sistema Simplex, da extensão Branch and Bound, da extensão de dados gráficos, da extensão Big M e do endpoint de resolução inteira.

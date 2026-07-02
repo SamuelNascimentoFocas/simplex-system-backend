@@ -19,6 +19,18 @@ export interface Registry {
       errorResponse: unknown
     }
   }
+  'branch_and_bound.solve': {
+    methods: ["POST"]
+    pattern: '/simplex/solve-integer'
+    types: {
+      body: {}
+      paramsTuple: []
+      params: {}
+      query: {}
+      response: unknown
+      errorResponse: unknown
+    }
+  }
   'auth.new_account.store': {
     methods: ["POST"]
     pattern: '/api/v1/auth/signup'

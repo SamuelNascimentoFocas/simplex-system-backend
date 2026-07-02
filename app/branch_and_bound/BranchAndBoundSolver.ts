@@ -1,4 +1,5 @@
 import SimplexService from '#services/simplex_service'
+import type { ConstraintInput } from '#services/simplex_service'
 import { createNode, resetNodeCounter } from './BranchNode.js'
 import {
   BranchAndBoundInput,
@@ -22,7 +23,7 @@ export default class BranchAndBoundSolver {
     resetNodeCounter()
     this.nodeMap = new Map()
 
-    const { objective, constraints, rhs, type } = input
+    const { objective, constraints, type } = input
     const numDecisionVars = objective.length
 
     let bestSolution: number[] | null = null
@@ -40,40 +41,47 @@ export default class BranchAndBoundSolver {
       const node = queue.shift()!
       nodesVisited++
 
-      const { nodeConstraints, nodeRhs } = this.buildNodeConstraints(
+      // Monta as restrições do nó: originais + cortes de branching acumulados
+      const nodeConstraints = this.buildNodeConstraints(
         constraints,
-        rhs,
         node.cuts,
         numDecisionVars
       )
 
-      let tableau: number[][]
-      let result: ReturnType<SimplexService['solve']> | undefined
+      // Usa createInitialTableauWithMeta para obter artificialVarIndices,
+      // necessários para detectar inviabilidade corretamente com Big M.
+      let standardForm: ReturnType<SimplexService['createInitialTableauWithMeta']>
+      let result: ReturnType<SimplexService['solve']>
 
       try {
-        tableau = this.simplexService.createInitialTableau({
+        standardForm = this.simplexService.createInitialTableauWithMeta({
           objective,
           constraints: nodeConstraints,
-          rhs: nodeRhs,
           type,
         })
-        result = this.simplexService.solve(tableau)
+        result = this.simplexService.solve(standardForm.tableau)
       } catch {
+        // solve() lança erro apenas para problema ilimitado
         node.status = 'unbounded'
+        nodesPruned++
+        continue
+      }
+
+      // Detecta inviabilidade via SimplexService, que verifica se alguma
+      // variável artificial permaneceu na base com valor positivo.
+      // Essa é a verificação correta para Big M — a heurística de RHS
+      // negativo no tableau final não é mais adequada.
+      if (this.simplexService.isInfeasible(result.finalTableau, standardForm.artificialVarIndices)) {
+        node.status = 'infeasible'
         nodesPruned++
         continue
       }
 
       const extracted = this.simplexService.extractSolution(
         result.finalTableau,
-        numDecisionVars
+        numDecisionVars,
+        type
       )
-
-      if (this.isInfeasible(result.finalTableau, nodeRhs)) {
-        node.status = 'infeasible'
-        nodesPruned++
-        continue
-      }
 
       const objValue = extracted.optimalValue
       const solution = extracted.solution
@@ -81,6 +89,7 @@ export default class BranchAndBoundSolver {
       node.solution = solution
       node.objectiveValue = objValue
 
+      // Poda por bound
       if (bestObjectiveValue !== null) {
         const pruneByBound =
           type === 'max'
@@ -94,9 +103,11 @@ export default class BranchAndBoundSolver {
         }
       }
 
+      // Verifica integralidade
       const fractionalIndex = this.findFractionalVariable(solution)
 
       if (fractionalIndex === -1) {
+        // Solução inteira — candidata ao ótimo
         node.status = 'integer'
 
         const isBetter =
@@ -111,6 +122,7 @@ export default class BranchAndBoundSolver {
         continue
       }
 
+      // Ramificação: cria dois filhos com cortes sobre a variável fracionária
       node.status = 'fractional'
       const fractionalValue = solution[fractionalIndex]
 
@@ -158,46 +170,44 @@ export default class BranchAndBoundSolver {
     }
   }
 
+  /**
+   * Constrói a lista de restrições do nó combinando as restrições originais
+   * com os cortes de branching acumulados desde a raiz.
+   *
+   * Cada corte é expresso diretamente como ConstraintInput com o operador
+   * correto, eliminando o workaround anterior de coeficiente negativo + RHS
+   * negado. O SimplexService trata os operadores >= e = via Big M.
+   *
+   * Corte leq: x_j <= floor(v)  →  operator: '<='
+   * Corte geq: x_j >= ceil(v)   →  operator: '>='
+   */
   private buildNodeConstraints(
-    originalConstraints: number[][],
-    originalRhs: number[],
+    originalConstraints: ConstraintInput[],
     cuts: BranchCut[],
     numDecisionVars: number
-  ): { nodeConstraints: number[][]; nodeRhs: number[] } {
-    const nodeConstraints = originalConstraints.map((row) => [...row])
-    const nodeRhs = [...originalRhs]
+  ): ConstraintInput[] {
+    const nodeConstraints: ConstraintInput[] = originalConstraints.map((c) => ({ ...c }))
 
     for (const cut of cuts) {
-      const cutRow = Array(numDecisionVars).fill(0)
+      const coefficients = Array(numDecisionVars).fill(0)
+      coefficients[cut.variableIndex] = 1
 
-      if (cut.type === 'leq') {
-        cutRow[cut.variableIndex] = 1
-        nodeConstraints.push(cutRow)
-        nodeRhs.push(cut.bound)
-      } else {
-        cutRow[cut.variableIndex] = -1
-        nodeConstraints.push(cutRow)
-        nodeRhs.push(-cut.bound)
+      const cutConstraint: ConstraintInput = {
+        coefficients,
+        operator: cut.type === 'leq' ? '<=' : '>=',
+        rhs: cut.bound,
       }
+
+      nodeConstraints.push(cutConstraint)
     }
 
-    return { nodeConstraints, nodeRhs }
+    return nodeConstraints
   }
 
-  private isInfeasible(finalTableau: number[][], nodeRhs: number[]): boolean {
-    const lastRowIndex = finalTableau.length - 1
-    const lastColIndex = finalTableau[0].length - 1
-
-    for (let rowIndex = 0; rowIndex < lastRowIndex; rowIndex++) {
-      const rhsValue = finalTableau[rowIndex][lastColIndex]
-      if (rhsValue < -EPSILON) {
-        return true
-      }
-    }
-
-    return false
-  }
-
+  /**
+   * Retorna o índice da primeira variável de decisão com valor fracionário.
+   * Retorna -1 se todas forem inteiras (dentro de EPSILON).
+   */
   private findFractionalVariable(solution: number[]): number {
     for (let i = 0; i < solution.length; i++) {
       const value = solution[i]

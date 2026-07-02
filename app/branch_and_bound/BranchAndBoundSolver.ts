@@ -79,7 +79,8 @@ export default class BranchAndBoundSolver {
 
       const extracted = this.simplexService.extractSolution(
         result.finalTableau,
-        numDecisionVars
+        numDecisionVars,
+        type
       )
 
       const objValue = extracted.optimalValue

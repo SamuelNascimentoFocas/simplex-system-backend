@@ -124,7 +124,7 @@ export default class SimplexService {
     }
   }
 
-  extractSolution(finalTableau: number[][], numberOfVariables: number) {
+  extractSolution(finalTableau: number[][], numberOfVariables: number, type: 'max' | 'min') {
     const solution = Array(numberOfVariables).fill(0)
     const lastColumnIndex = finalTableau[0].length - 1
     const objectiveRowIndex = finalTableau.length - 1
@@ -149,7 +149,11 @@ export default class SimplexService {
       }
     }
 
-    const optimalValue = finalTableau[objectiveRowIndex][lastColumnIndex]
+    let optimalValue = finalTableau[objectiveRowIndex][lastColumnIndex]
+
+    if (type === 'min') {
+      optimalValue = -optimalValue
+    }
 
     return {
       solution,

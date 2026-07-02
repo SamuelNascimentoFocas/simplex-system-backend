@@ -103,7 +103,8 @@ export default class SimplexController {
 
     const extractedResult = simplexService.extractSolution(
       result.finalTableau,
-      objective.length
+      objective.length,
+      type
     )
 
     const hasMultipleSolutions = simplexService.hasMultipleOptimalSolutions(
